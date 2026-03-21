@@ -54,6 +54,7 @@ using namespace std;
 namespace ns3
 {
     NS_OBJECT_ENSURE_REGISTERED(MpTcpSocketBase);
+    int16_t is_addrID_known(vector<MpTcpAddressInfo>& addresses, uint8_t id);
 
     TypeId
         MpTcpSocketBase::GetTypeId(void) {
@@ -134,11 +135,11 @@ namespace ns3
                 MakeBooleanAccessor(&MpTcpSocketBase::m_shortPlotting),
                 MakeBooleanChecker())
 
-            .AddAttribute("LargePlotting",
-                " Activate short flow plotting ",
-                BooleanValue(false),
-                MakeBooleanAccessor(&MpTcpSocketBase::m_largePlotting),
-                MakeBooleanChecker())
+            .AddAttribute("MaxRTT",
+                "Maximum RTT allowed",
+                TimeValue(MilliSeconds(120)),
+                MakeTimeAccessor(&MpTcpSocketBase::maxRTT),
+                MakeTimeChecker())
             .AddAttribute("Retries",
                 "num of ack tries",
                 UintegerValue(5),
@@ -198,6 +199,8 @@ namespace ns3
         a = A_SCALE;
         totalCwnd = 0;
 
+        this->sendingBuffer.SetBufferSize(512); // 512 b
+        this->recvingBuffer.SetBufferSize(512);
         client = false;
         server = false;
 
@@ -234,12 +237,11 @@ namespace ns3
                     this->localAddrs.push_back(address_info);
                 }
                 ips.push_back(addr);
-                ss << "\tInterface " << i
-                    << " IP " << addr.GetAddress()
-                    << std::endl;
+                ss << "\tInterface " << i << " IP " << addr.GetAddress() << std::endl;
             }
             ifs.push_back(ips);
         }
+
         for (auto it : this->localAddrs) {
             if (!it.ipv4Addr.IsLocalhost()) {
                 auto dev = ipv4->GetInterfaceForAddress(it.ipv4Addr);
@@ -318,7 +320,8 @@ namespace ns3
     }
 
     /** Called by ForwardUp() to estimate RTT */
-    void MpTcpSocketBase::EstimateRtt(uint8_t sFlowIdx, const TcpHeader& mptcpHeader) {
+    void
+        MpTcpSocketBase::EstimateRtt(uint8_t sFlowIdx, const TcpHeader& mptcpHeader) {
         NS_LOG_FUNCTION(this << (int)sFlowIdx);
         Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
         // sFlow->lastMeasuredRtt = sFlow->rtt->AckSeq(mptcpHeader.GetAckNumber());// Ackseq method has
@@ -339,7 +342,8 @@ namespace ns3
     }
 
     /* Read options from incoming packets */
-    bool MpTcpSocketBase::ReadOptions(Ptr<Packet> pkt, const TcpHeader& mptcpHeader) { // Any packet without SYN and MP_CAPABLE is not being processed!
+    bool
+        MpTcpSocketBase::ReadOptions(Ptr<Packet> pkt, const TcpHeader& mptcpHeader) { // Any packet without SYN and MP_CAPABLE is not being processed!
         NS_LOG_FUNCTION(this << mptcpHeader);
         // NS_ASSERT(remoteToken == 0 && mpEnabled == false);
         const TcpHeader::TcpOptionList mp_options = mptcpHeader.GetOptionList();
@@ -376,6 +380,7 @@ namespace ns3
         NS_LOG_FUNCTION(this << (int)sFlowIdx << mptcpHeader);
         Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
         const TcpHeader::TcpOptionList mp_options = mptcpHeader.GetOptionList();
+        NS_LOG_INFO("rdopt: recvd " << mp_options.size() << " options");
 
         uint8_t flags = mptcpHeader.GetFlags();
         // const TcpOptionMptcp* opt;
@@ -387,7 +392,8 @@ namespace ns3
             if (mp_option->GetKind() != TcpOption::MULTIPATH_TCP) {
                 continue;
             }
-            NS_LOG_INFO("ReadOptions: option " << opt->GetSubType() << " is received with flags: " << (int)flags);
+            NS_LOG_INFO("ReadOptions: option " << opt->GetSubtypeName()
+                << " is received with flags: " << (int)flags);
             if ((opt->GetSubType() == MP_SubType::MP_CAPABLE) && hasSyn && (mpRecvState == MP_NONE)) { // SYN+ACK would be send later on by ProcessSynRcvd(...) //ok
                 NS_LOG_DEBUG("rdopt: mp_capable");
                 auto pkg = DynamicCast<const pkg_mp_capable>(opt->GetPackage());
@@ -409,6 +415,24 @@ namespace ns3
                 auto pkg = DynamicCast<const pkg_mp_add_addr>(opt->GetPackage());
                 auto address_id = pkg->GetAddressId();
                 // auto address = pkg->GetAddress();
+                // Ipv4Header ip4Header;
+                if (pkg->is_echo()) {
+                    NS_ASSERT(this->localAddrs.size());
+                    auto addr_idx = is_addrID_known(localAddrs, address_id);
+                    NS_ASSERT_MSG(addr_idx != -1, "addr_idx is not in localaddr: " << +address_id);
+                    localAddrs[addr_idx].acked = true;
+                    bool is_localaddr_all_acked = true;
+                    for (const auto& it : localAddrs) {
+                        is_localaddr_all_acked &= it.acked;
+                    }
+                    if (is_localaddr_all_acked) {
+                        sFlow->retxEvent.Cancel();
+                        NS_LOG_INFO("ReadOptions: recevd all localaddrs ack.");
+                    }
+                    NS_LOG_DEBUG("ADD_ADDR: recvd echo of " << +pkg->GetAddressId());
+                    continue;
+                }
+                NS_ASSERT(client != true);
                 auto addr = MpTcpAddressInfo();
                 NS_ASSERT_MSG(!pkg->IsIpv6(), "ipv6 is not impled");
                 MpTcpAddressInfo addrInfo;
@@ -417,7 +441,28 @@ namespace ns3
                 RemoveAddress(remoteAddrs, address_id);
                 // TxAddr = true;
                 this->remoteAddrs.push_back(addrInfo);
-                NS_LOG_INFO("add new addr: " << addrInfo.ipv4Addr);
+                auto echo_pkt = Create<Packet>();
+                TcpHeader echo_header;
+                // ===making echo===
+                echo_header.SetFlags(TcpHeader::ACK);
+                echo_header.SetSequenceNumber(mptcpHeader.GetAckNumber());
+                echo_header.SetAckNumber(mptcpHeader.GetSequenceNumber());
+                echo_header.SetSourcePort(m_localPort); // m_endPoint->GetLocalPort()
+                echo_header.SetDestinationPort(mptcpHeader.GetSourcePort());
+
+                auto echo_opt = CreateObject<TcpOptionMptcp>(MP_SubType::ADD_ADDR);
+                auto echo_pkg = DynamicCast<pkg_mp_add_addr>(echo_opt->GetPackage());
+                echo_pkg->set_echo(true);
+                echo_pkg->SetAddress(addrInfo.ipv4Addr);
+                echo_pkg->SetAddressId(addrInfo.addrID);
+                echo_header.AppendOption(echo_opt);
+                NS_LOG_INFO("echo: " << m_localAddress << "->" << m_remoteAddress
+                    << " add new addr: " << addrInfo.ipv4Addr);
+                m_tcp->SendPacket(echo_pkt,
+                    echo_header,
+                    m_localAddress,
+                    m_remoteAddress,
+                    FindOutputNetDevice(m_localAddress));
             }
             else if ((opt->GetSubType() == MP_PRIO)) {
                 auto pkg = DynamicCast<const pkg_mp_prio>(opt->GetPackage());
@@ -436,7 +481,7 @@ namespace ns3
             else if (hasSyn) { // incoming packet has syn but without proper mptcp option
                 // TODO Should send RST here as remoteToken is not received...
             }
-            return true;
+            // return true;
         }
         if (TxAddr == true) {
             mpRecvState = MP_ADDR;
@@ -461,9 +506,10 @@ namespace ns3
 
     /** Received a packet upon ESTABLISHED state. This function is mimicking the
      role of tcp_rcv_established() in tcp_input.c in Linux kernel. */
-    void MpTcpSocketBase::ProcessEstablished(uint8_t sFlowIdx,
-        Ptr<Packet> packet,
-        const TcpHeader& mptcpHeader) {
+    void
+        MpTcpSocketBase::ProcessEstablished(uint8_t sFlowIdx,
+            Ptr<Packet> packet,
+            const TcpHeader& mptcpHeader) {
         NS_LOG_FUNCTION(this << mptcpHeader);
 
         // Extract the flags. PSH and URG are not honoured.
@@ -645,8 +691,8 @@ namespace ns3
     }
 
     /** Received a packet upon SYN_SENT */
-    void
-        MpTcpSocketBase::ProcessSynSent(uint8_t sFlowIdx, Ptr<Packet> packet, const TcpHeader& mptcpHeader) {
+    void MpTcpSocketBase::ProcessSynSent(uint8_t sFlowIdx, Ptr<Packet> packet, const TcpHeader& mptcpHeader) {
+        client = true;
         NS_LOG_FUNCTION(this << mptcpHeader);
         Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
 
@@ -690,8 +736,7 @@ namespace ns3
             sFlow->rtt->Measurement(_rtt);
             NS_LOG_INFO("rtt_estimate: " << sFlow->rtt->GetEstimate().GetMicroSeconds());
             sFlow->initialSequnceNumber = (mptcpHeader.GetAckNumber().GetValue());
-            NS_LOG_INFO("(" << sFlow->routeId << ") InitialSeqNb of data packet should be --->>> "
-                << sFlow->initialSequnceNumber << " Cwnd: " << sFlow->cwnd);
+            NS_LOG_INFO("(" << sFlow->routeId << ") InitialSeqNb of data packet should be --->>> " << sFlow->initialSequnceNumber << " Cwnd: " << sFlow->cwnd);
             sFlow->RxSeqNumber = (mptcpHeader.GetSequenceNumber()).GetValue() + 1;
             sFlow->highestAck = std::max(sFlow->highestAck, mptcpHeader.GetAckNumber().GetValue() - 1);
             sFlow->TxSeqNumber = mptcpHeader.GetAckNumber().GetValue();
@@ -735,14 +780,14 @@ namespace ns3
                 }
                 addrAdvertised = true;
             }
-
             if (m_state != ESTABLISHED) {
                 m_state = ESTABLISHED;
                 NotifyConnectionSucceeded();
             }
-            if (subflows.size() > 1) {
-                SendPendingData(sFlowIdx); // in processSynSent()
-            }
+            if (sFlow->retxEvent.)
+                if (subflows.size() > 1) {
+                    SendPendingData(sFlowIdx); // in processSynSent()
+                }
             // NS_LOG_UNCOND("ProcessSynSent -> SubflowsSize: " << subflows.size());
         } // end of else if (SYN/ACK)
         else { // Other in-sequence input
@@ -769,6 +814,7 @@ namespace ns3
         NS_LOG_FUNCTION(this << mptcpHeader);
         Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
         uint8_t tcpflags = mptcpHeader.GetFlags() & ~(TcpHeader::PSH | TcpHeader::URG);
+        server = true;
 
         if (tcpflags == 0 || (tcpflags == TcpHeader::ACK)) { // handshake is completed nicely in the receiver.
             NS_LOG_INFO(" (" << sFlow->routeId << ") " << TcpStateName[sFlow->state]
@@ -777,8 +823,7 @@ namespace ns3
             sFlow->state = ESTABLISHED; // Subflow state is ESTABLISHED
             m_state = ESTABLISHED;      // NEED TO CONSIDER IT AGAIN....
             sFlow->connected = true;    // This means subflow is established
-            sFlow->retxEvent
-                .Cancel(); // This would cancel ReTxTimer where it being setup when SYN is sent.
+            sFlow->retxEvent.Cancel(); // This would cancel ReTxTimer where it being setup when SYN is sent.
             // Danger? Does this assertion is correct? what if lack ack of 3WHS plus first d-packet get
             // drop??! NS_ASSERT_MSG(sFlow->RxSeqNumber == mptcpHeader.GetSequenceNumber().GetValue(),
             // "Ops"); Following two lines are equal to this single statement "sFlow->MaxSeqNb =
@@ -794,8 +839,10 @@ namespace ns3
                 NotifyNewConnectionCreated(this, m_remoteAddress);
             }
             //
-            // NS_LOG_UNCOND ("---------------------- HandShake is Completed in ServerSide
-            // ----------------------" << subflows.size());
+            NS_LOG_DEBUG(
+                "---------------------- HandShake is Completed in ServerSide ----------------------"
+                << std::endl
+                << "time: " << Simulator::Now().As(Time::MS));
             if (tcpflags == 0) {
                 NS_LOG_WARN(Simulator::Now().GetSeconds()
                     << " [" << m_node->GetId() << "] (" << sFlow->routeId
@@ -932,7 +979,8 @@ namespace ns3
         }
     }
 
-    void MpTcpSocketBase::ProcessLastAck(uint8_t sFlowIdx, Ptr<Packet> packet, const TcpHeader& mptcpHeader) {
+    void
+        MpTcpSocketBase::ProcessLastAck(uint8_t sFlowIdx, Ptr<Packet> packet, const TcpHeader& mptcpHeader) {
         NS_LOG_FUNCTION(this << mptcpHeader);
         Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
         NS_LOG_INFO("(" << (int)sFlowIdx
@@ -971,7 +1019,8 @@ namespace ns3
     }
 
     // Receipt of new packet
-    void MpTcpSocketBase::ReceivedData(uint8_t sFlowIdx, Ptr<Packet> p, const TcpHeader& mptcpHeader) {
+    void
+        MpTcpSocketBase::ReceivedData(uint8_t sFlowIdx, Ptr<Packet> p, const TcpHeader& mptcpHeader) {
         NS_LOG_FUNCTION(this << mptcpHeader);
         Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
         uint32_t expectedSeq = sFlow->RxSeqNumber;
@@ -985,10 +1034,10 @@ namespace ns3
                 continue;
             }
             // auto opt = DynamicCast<const TcpOptionMptcp>(it);
-            NS_ASSERT_MSG(opt != nullptr, "ReceivedData(): opt should not be nullptr here!");
+            NS_ASSERT_MSG(opt != nullptr, "ReceivedDat(): opt should not be nullptr here!");
             if (opt->GetSubType() == MP_SubType::DSS) {
-                auto dss = DynamicCast<const pkg_mp_dss>(opt);
-                NS_ASSERT_MSG(opt != nullptr, "ReceivedData(): pkg should not be nullptr here!");
+                auto dss = DynamicCast<const pkg_mp_dss>(opt->GetPackage());
+                NS_ASSERT_MSG(dss != nullptr, "ReceivedData(): pkg should not be nullptr here!");
 
                 if (dss->is_fin()) {
                     NS_LOG_INFO("Received a DSS option with FIN flag, subflowSeq: "
@@ -1695,8 +1744,7 @@ namespace ns3
         return 0;
     }
 
-    int
-        MpTcpSocketBase::Connect(Ipv4Address servAddr, uint16_t servPort) {
+    int MpTcpSocketBase::Connect(Ipv4Address servAddr, uint16_t servPort) {
         NS_LOG_FUNCTION(this << servAddr << servPort); //
         Ptr<MpTcpSubFlow> sFlow = CreateObject<MpTcpSubFlow>();
         sFlow->routeId = (subflows.size() == 0 ? 0 : subflows[subflows.size() - 1]->routeId + 1);
@@ -1941,26 +1989,25 @@ namespace ns3
         while (!sendingBuffer.Empty()) {
             uint32_t window = 0;
             // Search for a subflow with available windows
+            // window = std::min(AvailableWindow(lastUsedsFlowIdx),
+            //                   sendingBuffer.PendingData()); // Get available window size
+            auto new_subflow = lastUsedsFlowIdx;
             for (uint32_t i = 0; i < subflows.size(); i++) {
-                if (subflows[lastUsedsFlowIdx]->state != ESTABLISHED) {
+                if (subflows[new_subflow]->state != ESTABLISHED) {
                     continue;
                 }
-                window = std::min(AvailableWindow(lastUsedsFlowIdx),
-                    sendingBuffer.PendingData()); // Get available window size
-                if (window == 0) { // No more available window in the current subflow, try with another one
-                    NS_LOG_LOGIC("SendPendingData -> No window available on (" << (int)lastUsedsFlowIdx
-                        << ") Try next one!");
-                    lastUsedsFlowIdx = getSubflowToUse();
-                }
-                else {
+                if ((window = std::min(AvailableWindow(new_subflow), sendingBuffer.PendingData())) != 0) {
+                    lastUsedsFlowIdx = new_subflow;
                     NS_LOG_LOGIC("SendPendingData -> Find subflow with spare window PendingData ("
                         << sendingBuffer.PendingData() << ") Available window ("
                         << AvailableWindow(lastUsedsFlowIdx) << ")");
                     break;
                 }
+                new_subflow = getSubflowToUse();
             }
 
             if (window == 0) {
+                NS_LOG_LOGIC("SendPendingData -> No window available subflow to send data, pendding.");
                 break;
             }
 
@@ -1987,7 +2034,7 @@ namespace ns3
                     nOctetsSent += amountSent; // Count total bytes sent in this loop
                 }
             } // end of if statement
-            lastUsedsFlowIdx = getSubflowToUse();
+            // lastUsedsFlowIdx = getSubflowToUse();
         } // end of main while loop
         // NS_LOG_UNCOND ("["<< m_node->GetId() << "] SendPendingData -> amount data sent = " <<
         // nOctetsSent << "... Notify application.");
@@ -2000,7 +2047,7 @@ namespace ns3
     uint8_t
         MpTcpSocketBase::getSubflowToUse() {
         NS_LOG_FUNCTION(this);
-        uint8_t nextSubFlow = 0;
+        int16_t nextSubFlow = -1;
         switch (distribAlgo) {
         case Round_Robin:
             nextSubFlow = (lastUsedsFlowIdx + 1) % subflows.size();
@@ -2282,7 +2329,8 @@ namespace ns3
         SendPendingData(sFlow->routeId); // in newack()
     }
 
-    void MpTcpSocketBase::SendEmptyPacket(uint8_t sFlowIdx, uint8_t flags) {
+    void
+        MpTcpSocketBase::SendEmptyPacket(uint8_t sFlowIdx, uint8_t flags) {
         NS_LOG_FUNCTION(this << (int)sFlowIdx);
         Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
         Ptr<Packet> p = Create<Packet>();
@@ -2419,13 +2467,19 @@ namespace ns3
         // header.SetOptionsLength(olen);
         // header.SetPaddingLength(plen);
 
+        sFlow->retxEvent =
+            Simulator::Schedule(RTO, &MpTcpSocketBase::SendEmptyPacket, this, sFlowIdx, flags);
         m_tcp->SendPacket(p, header, sFlow->sAddr, sFlow->dAddr, FindOutputNetDevice(sFlow->sAddr));
         // sFlow->rtt->SentSeq (sFlow->TxSeqNumber, 1);           // notify the RTT
 
         if (sFlow->retxEvent.IsExpired() && (hasFin || hasSyn) && !isAck) { // Retransmit SYN / SYN+ACK / FIN / FIN+ACK to guard against lost
             // RTO = sFlow->rtt->RetransmitTimeout();
             sFlow->retxEvent =
-                Simulator::Schedule(RTO, &MpTcpSocketBase::SendEmptyPacket, this, sFlowIdx, flags);
+                Simulator::Schedule(RTO * 2, &MpTcpSocketBase::SendEmptyPacket, this, sFlowIdx, flags);
+            if (RTO >= this->maxRTT) {
+                NS_LOG_INFO("reretransmit reach max rtt!");
+                return;
+            }
             if (hasSyn) {
                 // cout << this << " ["<< m_node->GetId() << "]("<<(int)sFlowIdx <<") SendEmptyPacket ->
                 // "<< TcpFlagPrinter(flags)<< " ReTxTimer set for SYN / SYN+ACK now " << Simulator::Now
@@ -2499,10 +2553,11 @@ namespace ns3
         DoForwardUp(p, header, port, interface);
     }
 
-    void MpTcpSocketBase::DoForwardUp(Ptr<Packet> p,
-        Ipv4Header header,
-        uint16_t port,
-        Ptr<Ipv4Interface> interface) {
+    void
+        MpTcpSocketBase::DoForwardUp(Ptr<Packet> p,
+            Ipv4Header header,
+            uint16_t port,
+            Ptr<Ipv4Interface> interface) {
         if (m_endPoint == 0) {
             NS_LOG_UNCOND("No endpoint exist");
             return;
@@ -2723,8 +2778,7 @@ namespace ns3
         return true;
     }
 
-    bool
-        MpTcpSocketBase::InitiateSingleSubflows(uint16_t randomPort) {
+    bool MpTcpSocketBase::InitiateSingleSubflows(uint16_t randomPort) {
         NS_LOG_FUNCTION_NOARGS();
 
         // NS_ASSERT(pathManager == NdiffPorts);
@@ -2796,8 +2850,7 @@ namespace ns3
     }
 
 #ifdef RAND_GAP
-    void
-        MpTcpSocketBase::InitiateMultipleSubflows() {
+    void MpTcpSocketBase::InitiateMultipleSubflows() {
         NS_LOG_FUNCTION_NOARGS();
         // Ptr<UniformRandomVariable> uniRandom = CreateObject<UniformRandomVariable>();
         vector<uint32_t> randomStorage;
@@ -3704,78 +3757,91 @@ namespace ns3
 
     void MpTcpSocketBase::AdvertiseAvailableAddresses() {
         NS_LOG_FUNCTION(m_node->GetId());
-        if (mpEnabled == true) {
-            // there is at least one subflow
-            Ptr<MpTcpSubFlow> sFlow = subflows[0];
-            NS_ASSERT(sFlow != nullptr);
-
-            // Change the MPTCP send state to MP_ADDR
-            mpSendState = MP_ADDR;
-            // MpTcpAddressInfo* addrInfo;
-            Ptr<Packet> pkt = Create<Packet>();
-
-            TcpHeader header;
-            header.SetFlags(TcpHeader::ACK);
-            header.SetSequenceNumber(SequenceNumber32(sFlow->TxSeqNumber));
-            header.SetAckNumber(SequenceNumber32(sFlow->RxSeqNumber));
-            header.SetSourcePort(m_localPort);       // m_endPoint->GetLocalPort()
-            header.SetDestinationPort(m_remotePort); // TODO Is this right?
-            // uint8_t hlen = 0;
-            // uint8_t olen = 0;
-
-            // Object from L3 to access to routing protocol, Interfaces and NetDevices and so on.
-            // Ptr<Ipv4L3Protocol> ipv4 = m_node->GetObject<Ipv4L3Protocol>();
-            // for (uint32_t i = 0; i < ipv4->GetNInterfaces(); i++) {
-            //     // Ptr<NetDevice> device = m_node->GetDevice(i);
-            //     Ptr<Ipv4Interface> interface = ipv4->GetInterface(i);
-            //     Ipv4InterfaceAddress interfaceAddr = interface->GetAddress(0);
-
-            //     // Skip the loop-back
-            //     if (interfaceAddr.GetLocal() == Ipv4Address::GetLoopback()) {
-            //         continue;
-            //     }
-            for (const auto& it : this->localAddrs) {
-                // addrInfo = new MpTcpAddressInfo();
-                // addrInfo->addrID = i;
-                // addrInfo->ipv4Addr = interfaceAddr.GetLocal();
-                // addrInfo->mask = interfaceAddr.GetMask();
-                // header.AddOptADDR(OPT_ADDR, addrInfo->addrID, addrInfo->ipv4Addr);
-                auto opt = CreateObject<TcpOptionMptcp>(MP_SubType::ADD_ADDR);
-                auto pkg = DynamicCast<pkg_mp_add_addr>(opt->GetPackage());
-                NS_ASSERT_MSG(pkg != nullptr, "AdvertiseAvailableAddresses(): pkg is null");
-                pkg->SetAddress(it.ipv4Addr);
-                pkg->SetAddressId(it.addrID);
-                pkg->set_echo(false);
-                header.AppendOption(opt);
-                NS_LOG_DEBUG("AdvertiseAvailableAddresses(): push a addr");
-                // header
-                // olen += 6;
-                // localAddrs.insert(localAddrs.end(), addrInfo);
-                // localAddrs.push_back(it);
-            }
-            // uint8_t plen = (4 - (olen % 4)) % 4;
-            // header.SetWindowSize(AdvertisedWindowSize());
-            // olen = (olen + plen) / 4;
-            // hlen = 5 + olen;
-            // header.SetLength(hlen);
-            // header.SetOptionsLength(olen);
-            // header.SetPaddingLength(plen);
-
-            // m_tcp->SendPacket(pkt, header, m_endPoint->GetLocalAddress(), m_remoteAddress);
-            m_tcp->SendPacket(pkt,
-                header,
-                m_localAddress,
-                m_remoteAddress,
-                FindOutputNetDevice(m_localAddress));
-            NS_LOG_INFO("AdvertiseAvailableAddresses-> " << header);
-        }
-        else {
+        if (mpEnabled != true) {
             NS_FATAL_ERROR("Need to be Looked...");
         }
+        // there is at least one subflow
+        Ptr<MpTcpSubFlow> sFlow = subflows[0];
+        NS_ASSERT(sFlow != nullptr);
+
+        // Change the MPTCP send state to MP_ADDR
+        mpSendState = MP_ADDR;
+        // MpTcpAddressInfo* addrInfo;
+        Ptr<Packet> pkt = Create<Packet>();
+
+        TcpHeader header;
+        header.SetFlags(TcpHeader::ACK);
+        header.SetSequenceNumber(SequenceNumber32(sFlow->TxSeqNumber));
+        header.SetAckNumber(SequenceNumber32(sFlow->RxSeqNumber));
+        header.SetSourcePort(m_localPort);       // m_endPoint->GetLocalPort()
+        header.SetDestinationPort(m_remotePort); // TODO Is this right?
+        // uint8_t hlen = 0;
+        // uint8_t olen = 0;
+
+        // Object from L3 to access to routing protocol, Interfaces and NetDevices and so on.
+        // Ptr<Ipv4L3Protocol> ipv4 = m_node->GetObject<Ipv4L3Protocol>();
+        // for (uint32_t i = 0; i < ipv4->GetNInterfaces(); i++) {
+        //     // Ptr<NetDevice> device = m_node->GetDevice(i);
+        //     Ptr<Ipv4Interface> interface = ipv4->GetInterface(i);
+        //     Ipv4InterfaceAddress interfaceAddr = interface->GetAddress(0);
+
+        //     // Skip the loop-back
+        //     if (interfaceAddr.GetLocal() == Ipv4Address::GetLoopback()) {
+        //         continue;
+        //     }
+        for (const auto& it : this->localAddrs) {
+            // addrInfo = new MpTcpAddressInfo();
+            // addrInfo->addrID = i;
+            // addrInfo->ipv4Addr = interfaceAddr.GetLocal();
+            // addrInfo->mask = interfaceAddr.GetMask();
+            // header.AddOptADDR(OPT_ADDR, addrInfo->addrID, addrInfo->ipv4Addr);
+            if (it.acked) {
+                continue;
+            }
+            auto opt = CreateObject<TcpOptionMptcp>(MP_SubType::ADD_ADDR);
+            auto pkg = DynamicCast<pkg_mp_add_addr>(opt->GetPackage());
+            NS_ASSERT_MSG(pkg != nullptr, "AdvertiseAvailableAddresses(): pkg is null");
+            pkg->SetAddress(it.ipv4Addr);
+            pkg->SetAddressId(it.addrID);
+            pkg->set_echo(false);
+            NS_LOG_DEBUG("AdvertiseAvailableAddresses: push a addr: " << +pkg->GetAddressId() << "(" << pkg->GetAddress() << ")");
+            if (header.GetSerializedSize() + opt->GetSerializedSize() >= 20) {
+                break;
+            }
+            header.AppendOption(opt);
+
+        }
+        // uint8_t plen = (4 - (olen % 4)) % 4;
+        // header.SetWindowSize(AdvertisedWindowSize());
+        // olen = (olen + plen) / 4;
+        // hlen = 5 + olen;
+        // header.SetLength(hlen);
+        // header.SetOptionsLength(olen);
+        // header.SetPaddingLength(plen);
+
+        // m_tcp->SendPacket(pkt, header, m_endPoint->GetLocalAddress(), m_remoteAddress);
+        Time RTO = sFlow->rtt->GetEstimate() + sFlow->rtt->GetVariation() * 4;
+        sFlow->retxEvent =
+            Simulator::Schedule(RTO, &MpTcpSocketBase::AdvertiseAvailableAddresses, this);
+        m_tcp->SendPacket(pkt,
+            header,
+            m_localAddress,
+            m_remoteAddress,
+            FindOutputNetDevice(m_localAddress));
+        if (sFlow->retxEvent.IsExpired()) {
+            sFlow->retxEvent =
+                Simulator::Schedule(RTO, &MpTcpSocketBase::AdvertiseAvailableAddresses, this);
+            NS_LOG_DEBUG("resend ADD_ADDR packet");
+            if (RTO >= this->maxRTT) {
+                NS_LOG_INFO("reretransmit reach max rtt!");
+                return;
+            }
+        }
+        NS_LOG_INFO("AdvertiseAvailableAddresses-> " << header
+            << "addr: " << this->m_localAddress << "->" << this->m_remoteAddress << "@time: " << Simulator::Now().As(Time::MS));
     }
 
-    bool
-        MpTcpSocketBase::IsThereRoute(Ipv4Address src, Ipv4Address dst) {
+    bool MpTcpSocketBase::IsThereRoute(Ipv4Address src, Ipv4Address dst) {
         NS_LOG_FUNCTION(this << src << dst);
         bool found = false;
         // Look up the source address
@@ -3844,7 +3910,8 @@ namespace ns3
         return oNetDevice;
     }
 
-    bool MpTcpSocketBase::IsLocalAddress(Ipv4Address addr) {
+    bool
+        MpTcpSocketBase::IsLocalAddress(Ipv4Address addr) {
         NS_LOG_FUNCTION(this << addr);
         bool found = false;
         for (const auto& it : localAddrs) {
@@ -3868,7 +3935,8 @@ namespace ns3
         return found;
     }
 
-    void MpTcpSocketBase::RemoveAddress(vector<MpTcpAddressInfo>& address_list, uint8_t addr_id) {
+    void
+        MpTcpSocketBase::RemoveAddress(vector<MpTcpAddressInfo>& address_list, uint8_t addr_id) {
         auto size = address_list.size();
         for (size_t i = 0; i < size; i++) {
             if (address_list[i].addrID == addr_id) {
@@ -4348,33 +4416,27 @@ namespace ns3
     //   return subflows[sFlowIdx];
     // }
 
-    void
-        MpTcpSocketBase::SetCongestionCtrlAlgo(CongestionCtrl_t ccalgo) {
+    void MpTcpSocketBase::SetCongestionCtrlAlgo(CongestionCtrl_t ccalgo) {
         AlgoCC = ccalgo;
     }
 
-    void
-        MpTcpSocketBase::SetDataDistribAlgo(DataDistribAlgo_t ddalgo) {
+    void MpTcpSocketBase::SetDataDistribAlgo(DataDistribAlgo_t ddalgo) {
         distribAlgo = ddalgo;
     }
 
-    void
-        MpTcpSocketBase::SetPathManager(PathManager_t pManagerMode) {
+    void MpTcpSocketBase::SetPathManager(PathManager_t pManagerMode) {
         pathManager = pManagerMode;
     }
 
-    void
-        MpTcpSocketBase::SetFlowId(uint32_t fd) {
+    void MpTcpSocketBase::SetFlowId(uint32_t fd) {
         flowId = fd;
     }
 
-    void
-        MpTcpSocketBase::SetFlowType(string input) {
+    void MpTcpSocketBase::SetFlowType(string input) {
         flowType = input;
     }
 
-    void
-        MpTcpSocketBase::SetOutputFileName(string input) {
+    void MpTcpSocketBase::SetOutputFileName(string input) {
         outputFileName = input;
     }
 
@@ -4418,8 +4480,7 @@ namespace ns3
     }
 
     // PLOT_CI_5_8_MPTCP_0_1
-    void
-        MpTcpSocketBase::GeneratePlotsOutput() {
+    void MpTcpSocketBase::GeneratePlotsOutput() {
         stringstream oss;
         // oss << "PLOT_" << m_node->GetId() << "_" << flowId << "_" << GetTypeIdName() <<"_"<<
         // PrintCC(AlgoCC) <<"_"<< (int)maxSubflows << "_" << (uint32_t)Simulator::Now().GetSeconds();
@@ -4436,20 +4497,17 @@ namespace ns3
         //  outfile.close();
     }
 
-    uint16_t
-        MpTcpSocketBase::GetRandom16() {
+    uint16_t MpTcpSocketBase::GetRandom16() {
         Ptr<UniformRandomVariable> uniRandom = CreateObject<UniformRandomVariable>();
         return uniRandom->GetInteger(1, 65535);
     }
 
-    uint32_t
-        MpTcpSocketBase::GetRandom32() {
+    uint32_t MpTcpSocketBase::GetRandom32() {
         Ptr<UniformRandomVariable> uniRandom = CreateObject<UniformRandomVariable>();
         return uniRandom->GetInteger(1, 4294967295);
     }
 
-    uint32_t
-        MpTcpSocketBase::GetRandom(uint32_t min, uint32_t max) {
+    uint32_t MpTcpSocketBase::GetRandom(uint32_t min, uint32_t max) {
         Ptr<UniformRandomVariable> uniRandom = CreateObject<UniformRandomVariable>();
         return uniRandom->GetInteger(min, max);
     }
@@ -4480,21 +4538,18 @@ namespace ns3
         return tmp;
     }
 
-    void
-        MpTcpSocketBase::SetDupAckThresh(uint32_t) {
+    void MpTcpSocketBase::SetDupAckThresh(uint32_t) {
         NS_LOG_FUNCTION_NOARGS();
     }
 
-    double
-        MpTcpSocketBase::drand() {
+    double MpTcpSocketBase::drand() {
         int r = rand();
         int m = RAND_MAX;
         double d = (double)r / (double)m;
         return d;
     }
 
-    string
-        MpTcpSocketBase::GetTypeIdName() {
+    string MpTcpSocketBase::GetTypeIdName() {
         string tmp = this->GetTypeId().GetName();
         if (tmp.compare("ns3::MpTcpSocketBase") == 0) {
             return "MPTCP";
@@ -4547,6 +4602,28 @@ namespace ns3
             }
         }
         return c;
+    }
+
+    int16_t
+        is_addrID_known(vector<MpTcpAddressInfo>& addresses, uint8_t id) {
+        NS_LOG_INFO("size of address" << addresses.size());
+        for (size_t i = 0; i < addresses.size(); i++) {
+            NS_LOG_DEBUG("finding: " << +id << "comp: " << +addresses[i].addrID);
+            if (addresses[i].addrID == id) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    int16_t
+        is_addr_known(vector<MpTcpAddressInfo>& addresses, Ipv4Address addr) {
+        for (size_t i = 0; i < addresses.size(); i++) {
+            if (addresses[i].ipv4Addr == addr) {
+                return i;
+            }
+        }
+        return -1;
     }
 
 } // namespace ns3
