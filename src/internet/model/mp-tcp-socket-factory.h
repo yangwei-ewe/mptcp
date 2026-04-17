@@ -6,13 +6,14 @@
 namespace ns3
 {
 
-    class Socket;
+class Socket;
 
-    class MpTcpSocketFactory : public SocketFactory {
-    public:
-        static TypeId GetTypeId();
-    };
+class MpTcpSocketFactory : public SocketFactory
+{
+  public:
+    static TypeId GetTypeId();
+};
 
-}
+} // namespace ns3
 
-#endif //MPTCP_SOCKET_FACTIRY_H
+#endif // MPTCP_SOCKET_FACTIRY_H

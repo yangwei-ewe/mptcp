@@ -126,8 +126,9 @@ set(source_files
     model/udp-socket-factory.cc
     model/udp-socket-impl.cc
     model/udp-socket.cc
-    model/mp-tcp-socket-base.cc
+    model/mp-tcp-hash.cc
     model/mp-tcp-typedefs.cc
+    model/mp-tcp-socket-base.cc
     model/mp-tcp-socket-factory.cc
     model/mp-tcp-socket-factory-impl.cc
     model/mp-tcp-subflow.cc
@@ -254,8 +255,9 @@ set(header_files
     model/udp-socket-factory.h
     model/udp-socket.h
     model/windowed-filter.h
-    model/mp-tcp-socket-base.h
+    model/mp-tcp-hash.h
     model/mp-tcp-typedefs.h
+    model/mp-tcp-socket-base.h
     model/mp-tcp-socket-factory.h
     model/mp-tcp-socket-factory-impl.h
     model/mp-tcp-subflow.h
@@ -351,7 +353,7 @@ build_lib(
   HEADER_FILES ${header_files}
   PRIVATE_HEADER_FILES ${private_header_files}
   LIBRARIES_TO_LINK ${libbridge}
-                    ${libtraffic-control}
+                    ${libtraffic-control} crypto
   TEST_SOURCES ${test_sources}
   GENERATE_EXPORT_HEADER
 )

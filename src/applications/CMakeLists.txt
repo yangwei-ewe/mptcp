@@ -8,8 +8,8 @@ build_lib(
     helper/udp-client-server-helper.cc
     helper/udp-echo-helper.cc
     helper/mp-tcp-bulk-send-helper.cc
-    helper/mp-tcp-packet-sink.cc
     helper/mp-tcp-packet-sink-helper.cc
+    model/mp-tcp-packet-sink.cc
     model/application-packet-probe.cc
     model/bulk-send-application.cc
     model/mptcp-bulk-send-application.cc
@@ -38,8 +38,8 @@ build_lib(
     helper/udp-client-server-helper.h
     helper/udp-echo-helper.h
     helper/mp-tcp-bulk-send-helper.h
-    helper/mp-tcp-packet-sink.h
     helper/mp-tcp-packet-sink-helper.h
+    model/mp-tcp-packet-sink.h
     model/application-packet-probe.h
     model/bulk-send-application.h
     model/mptcp-bulk-send-application.h

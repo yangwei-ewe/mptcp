@@ -4,10 +4,10 @@ BasedOnStyle: Microsoft
 
 AllowAllArgumentsOnNextLine: false
 AllowAllParametersOfDeclarationOnNextLine: false
-AllowAllFunctionsOnASingleLine: All
+AllowAllFunctionsOnASingleLine: Empty
 BinPackArguments: false
 BinPackParameters: false
-BreakAfterReturnType: TopLevelDefinitions
+BreakAfterReturnType: None
 BreakTemplateDeclarations: Yes
 ColumnLimit: 100
 IncludeBlocks: Regroup
@@ -35,3 +35,5 @@ SeparateDefinitionBlocks: Always
 Standard: "c++17"
 
 DefinitionReturnTypeBreakingStyle: None
+NamespaceIndentation: All
+BreakBeforeBraces: Attach

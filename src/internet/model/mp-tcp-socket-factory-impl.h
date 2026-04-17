@@ -10,17 +10,17 @@ class TcpL4Protocol;
 
 class MpTcpSocketFactoryImpl : public MpTcpSocketFactory
 {
-public:
-  MpTcpSocketFactoryImpl();
-  virtual ~MpTcpSocketFactoryImpl();
-  void SetTcp(Ptr<TcpL4Protocol>);
-  virtual Ptr<Socket> CreateSocket();
+  public:
+    MpTcpSocketFactoryImpl();
+    virtual ~MpTcpSocketFactoryImpl();
+    void SetTcp(Ptr<TcpL4Protocol>);
+    virtual Ptr<Socket> CreateSocket();
 
-protected:
-  virtual void DoDispose();
+  protected:
+    virtual void DoDispose();
 
-private:
-  Ptr<TcpL4Protocol> m_mptcp;
+  private:
+    Ptr<TcpL4Protocol> m_mptcp;
 };
 
 } // namespace ns3
