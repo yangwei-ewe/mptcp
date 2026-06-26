@@ -15,8 +15,7 @@
 
 #include <stdint.h>
 
-namespace ns3
-{
+namespace ns3 {
 
     /**
      * @ingroup tcp
@@ -24,7 +23,7 @@ namespace ns3
      * Base class for all kinds of TCP options
      */
     class TcpOption : public Object {
-    public:
+      public:
         TcpOption();
         ~TcpOption() override;
 
@@ -37,7 +36,7 @@ namespace ns3
         /**
          * The option Kind, as defined in the respective RFCs.
          */
-        enum Kind :uint8_t {
+        enum Kind : uint8_t {
             // Remember to extend IsKindKnown() with new value, when adding values here
             //
             END = 0,           //!< END
@@ -49,16 +48,21 @@ namespace ns3
             TS = 8,            //!< TS
 
             // IANA assigned extensions
-            QUICK_START_RESPONSE = 27,  //!< Quick-Start Response (RFC 4782)
-            USER_TIMEOUT = 28,  //!< User Timeout Option (RFC 5482)
-            TCP_AUTH_OPTION = 29,  //!< TCP Authentication Option (TCP-AO, RFC 5925)
-            MULTIPATH_TCP = 30,  //!< Multipath TCP (MPTCP, RFC 8684)
-            TCP_FAST_OPEN = 34,  //!< TCP Fast Open Cookie (RFC 7413)
-            ENCRYPTION_NEGOTIATION = 69,  //!< TCP Encryption Negotiation (TCP-ENO, RFC 8547)
-            ACCECN0 = 172, //!< Accurate ECN Order 0
-            ACCECN1 = 174, //!< Accurate ECN Order 1
+            QUICK_START_RESPONSE = 27,   //!< Quick-Start Response (RFC 4782)
+            USER_TIMEOUT = 28,           //!< User Timeout Option (RFC 5482)
+            TCP_AUTH_OPTION = 29,        //!< TCP Authentication Option (TCP-AO, RFC 5925)
+            MULTIPATH_TCP = 30,          //!< Multipath TCP (MPTCP, RFC 8684)
+            TCP_FAST_OPEN = 34,          //!< TCP Fast Open Cookie (RFC 7413)
+            ENCRYPTION_NEGOTIATION = 69, //!< TCP Encryption Negotiation (TCP-ENO, RFC 8547)
+            ACCECN0 = 172,               //!< Accurate ECN Order 0
+            ACCECN1 = 174,               //!< Accurate ECN Order 1
 
-            UNKNOWN = 255      //!< not a standardized value; for unknown recv'd options
+            INSTANT_RECOVERY =
+                254, //!< TCP-IR is a draft as draft-flach-tcpm-fec-00, but the option kind number
+                     //!< has not yet been defined. The draft is still accessible at
+                     //!< https://www.ietf.org/archive/id/draft-flach-tcpm-fec-00.txt
+
+            UNKNOWN = 255 //!< not a standardized value; for unknown recv'd options
         };
 
         /**
@@ -117,7 +121,7 @@ namespace ns3
      * serialized again.
      */
     class TcpOptionUnknown : public TcpOption {
-    public:
+      public:
         TcpOptionUnknown();
         ~TcpOptionUnknown() override;
 
@@ -134,7 +138,7 @@ namespace ns3
         uint8_t GetKind() const override;
         uint32_t GetSerializedSize() const override;
 
-    private:
+      private:
         uint8_t m_kind;        //!< The unknown option kind
         uint32_t m_size;       //!< The unknown option size
         uint8_t m_content[40]; //!< The option data

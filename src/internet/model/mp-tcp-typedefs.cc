@@ -5,6 +5,7 @@
 #include "ns3/simulator.h"
 #include "ns3/tcp-header.h"
 
+#include <iomanip>
 #include <iostream>
 
 NS_LOG_COMPONENT_DEFINE("MpTcpTypeDefs");
@@ -422,15 +423,76 @@ namespace ns3 {
                            uint64_t dSeqNum,
                            uint16_t dLvlLen,
                            uint32_t sflowSeqNum,
-                           uint32_t ack /*, Ptr<Packet> pkt*/) {
-        subflowIndex = sFlowIdx;
-        dataSeqNumber = dSeqNum;
-        dataLevelLength = dLvlLen;
-        subflowSeqNumber = sflowSeqNum;
-        acknowledgement = ack;
-        dupAckCount = 0;
+                           uint32_t ack /*, Ptr<Packet> pkt*/)
+        : dataSeqNumber(dSeqNum),
+          dataLevelLength(dLvlLen),
+          subflowSeqNumber(sflowSeqNum),
+          acknowledgement(ack),
+          dupAckCount(0),
+          subflowIndex(sFlowIdx) {
         // packet = new uint8_t[dLvlLen];
         // pkt->CopyData(packet, dLvlLen);
+    }
+
+    // DSNMapping::DSNMapping(uint8_t sFlowIdx,
+    //                        uint64_t dSeqNum,
+    //                        uint16_t dLvlLen,
+    //                        uint32_t sflowSeqNum,
+    //                        uint32_t ack,
+    //                        FecBlock& fec)
+    //     : buf{fec} {
+    //     subflowIndex = sFlowIdx;
+    //     dataSeqNumber = dSeqNum;
+    //     dataLevelLength = dLvlLen;
+    //     subflowSeqNumber = sflowSeqNum;
+    //     acknowledgement = ack;
+    //     dupAckCount = 0;
+    //     // packet = new uint8_t[dLvlLen];
+    //     // pkt->CopyData(packet, dLvlLen);
+    // }
+
+    DSNMapping::DSNMapping(uint8_t sFlowIdx,
+                           uint64_t dSeqNum,
+                           uint16_t dLvlLen,
+                           uint32_t sflowSeqNum,
+                           uint32_t ack,
+                           const vector<Buffer>& ecc_block,
+                           const vector<Buffer>& src_block)
+        : DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack) {
+        // subflowIndex = sFlowIdx;
+        // dataSeqNumber = dSeqNum;
+        // dataLevelLength = dLvlLen;
+        // subflowSeqNumber = sflowSeqNum;
+        // acknowledgement = ack;
+        // dupAckCount = 0;
+        uint32_t seq_num{0};
+        // for (const auto& it : ecc_block) {
+        //     fec_blocks.push_back({seq_num, it});
+        //     seq_num += it.GetSize();
+        // }
+        for (const auto& it : ecc_block) {
+            fec_blocks[seq_num++] = it;
+        }
+        this->ecc_length = seq_num;
+        for (const auto& it : src_block) {
+            fec_blocks[seq_num++] = it;
+        }
+        this->minDecodePkt = seq_num - ecc_length;
+        this->maxFecRange = seq_num;
+        // packet = new uint8_t[dLvlLen];
+        // pkt->CopyData(packet, dLvlLen);
+    }
+
+    DSNMapping::DSNMapping(uint8_t sFlowIdx, // v2, receiver entry
+                           uint64_t dSeqNum,
+                           uint16_t dLvlLen,
+                           uint32_t sflowSeqNum,
+                           uint32_t ack,
+                           size_t min_pkg_num,
+                           size_t max_pkg_num)
+        : DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack) {
+        minDecodePkt = min_pkg_num;
+        maxFecRange = max_pkg_num;
     }
 
     /*
@@ -458,6 +520,43 @@ namespace ns3 {
 
     bool DSNMapping::operator<(const DSNMapping& rhs) const {
         return this->dataSeqNumber < rhs.dataSeqNumber;
+    }
+
+    const Buffer& DSNMapping::Get(size_t idx) const {
+        NS_ASSERT_MSG(idx < this->fec_blocks.size(),
+                      "DSNMapping::Get() -> asking idx " << +idx << " is out of buffer size "
+                                                         << fec_blocks.size());
+        return this->fec_blocks.at(idx);
+    }
+
+    void DSNMapping::Received(uint32_t seq_num, const Buffer& data) {
+        uint32_t idx{0};
+        if (this->fec_blocks.size() == 0) {
+            NS_ASSERT(this->subflowSeqNumber == seq_num);
+            this->fec_blocks[0] = data;
+        } else {
+            idx = (seq_num - this->subflowSeqNumber) / this->fec_blocks[0].GetSize();
+            this->fec_blocks[idx] = data;
+        }
+        NS_LOG_DEBUG("DSNMapping::Received() -> received idx: " << idx
+                                                                << " size: " << data.GetSize());
+        // uint8_t peek[50];
+        // data.CopyData(peek, sizeof(peek));
+        // // peek[199] = '\0';
+        // stringstream ss;
+        // for (auto ch : peek) {
+        //     ss << setw(3) << setfill(' ') << +ch << ' ';
+        // }
+        // NS_LOG_DEBUG("DSNMapping::Received -> received data: " << ss.str());
+        return;
+    }
+
+    size_t DSNMapping::GetEccLength() const {
+        return this->ecc_length;
+    }
+
+    size_t DSNMapping::size() const {
+        return this->fec_blocks.size();
     }
 
     DataBuffer::DataBuffer() {
@@ -497,6 +596,7 @@ namespace ns3 {
 
     uint32_t DataBuffer::Add(uint8_t* buf, uint32_t size) {
         // read data from buf and insert it into the DataBuffer instance
+        NS_LOG_FUNCTION(this << buf << size);
         NS_ASSERT_MSG((buf != nullptr), "DataBuffer::Add -> input buffer is null !");
         NS_LOG_FUNCTION(this << (int)size << (int)(bufMaxSize - (uint32_t)buffer.size()));
         uint32_t toWrite = std::min(size, (bufMaxSize - (uint32_t)buffer.size()));
@@ -614,12 +714,11 @@ namespace ns3 {
         NS_LOG_INFO(this << (int)(bufMaxSize - (uint32_t)buffer.size()));
 
         uint32_t toWrite = std::min(dataLen, (bufMaxSize - (uint32_t)buffer.size()));
-
-        // uint8_t *ptrBuffer = new uint8_t[toWrite];
-        // pkt->CopyData(ptrBuffer, toWrite);
+        uint8_t* ptrBuffer = new uint8_t[toWrite];
+        pkt->CopyData(ptrBuffer, toWrite);
 
         for (uint32_t i = 0; i < toWrite; i++) {
-            buffer.push(0);
+            buffer.push(*(ptrBuffer + i));
         }
         // buffer.push(ptrBuffer[i]);
 
@@ -630,6 +729,40 @@ namespace ns3 {
         NS_LOG_INFO("DataBuffer::ReadPacket -> freeSpaceSize == " << bufMaxSize -
                                                                          (uint32_t)buffer.size());
         return toWrite;
+    }
+
+    Buffer DataBuffer::GetBuffer(size_t size) {
+        NS_LOG_FUNCTION(this);
+        Buffer buf;
+        if (this->buffer.size() < size) {
+            NS_LOG_ERROR("no enough data in buf");
+            return buf;
+        }
+        buf.AddAtEnd(size);
+        auto it = buf.Begin();
+        size_t orig_size{buffer.size()};
+        for (size_t i = 0; i < size; i++) {
+            it.WriteU8(buffer.front());
+            buffer.pop();
+        }
+        NS_LOG_INFO("DataBuffer::GetBuffer -> buffer size " << orig_size << " -> "
+                                                            << buffer.size());
+        return buf;
+    }
+
+    size_t DataBuffer::Get(uint8_t* dataBuf, size_t size) {
+        NS_LOG_FUNCTION(this);
+
+        NS_ASSERT(dataBuf != nullptr);
+        size_t start{0};
+        size_t orig_size{buffer.size()};
+        size_t toRead{std::min(size, orig_size)};
+        while (start < toRead) {
+            dataBuf[start++] = buffer.front();
+            buffer.pop();
+        }
+        NS_LOG_INFO("DataBuffer::Get -> buffer size " << orig_size << " -> " << buffer.size());
+        return toRead;
     }
 
     uint32_t DataBuffer::PendingData() {
@@ -837,6 +970,7 @@ namespace ns3 {
 
     void TcpOptionMptcp::Serialize(Buffer::Iterator buf) const {
         auto _buf = this->pkg->Serialize();
+        NS_ASSERT(_buf.GetSize() == this->pkg->CalculateLength());
         // auto i = _buf.Begin();
         buf.Write(_buf.Begin(), _buf.End());
     }
@@ -1325,6 +1459,7 @@ namespace ns3 {
             data_level_length = buf.ReadNtohU16();
         }
         checksum = buf.ReadNtohU16();
+        NS_LOG_DEBUG("pkg_mp_dss::Deserialize -> length: " << +length);
         return this->CalculateLength();
     }
 
@@ -1474,18 +1609,15 @@ namespace ns3 {
             // write IPv4 address in network byte order
             i.WriteHtonU32(this->ipv4Addr.Get());
         }
-
         // ===== Port =====
         if (has_port) {
             i.WriteHtonU16(port);
         }
-
         // ===== HMAC =====
         if (!echo) {
             this->mk_hmac();
             i.WriteHtonU64(truncated_hmac);
         }
-
         return buf;
     }
 
@@ -1816,4 +1948,124 @@ namespace ns3 {
     uint8_t pkg_mp_tcprst::CalculateLength() {
         return 4;
     }
+
+    constexpr bool SeqLess(uint16_t seq1, uint16_t seq2) {
+        return static_cast<int16_t>(seq1 - seq2) < 0;
+    }
+
+    constexpr bool SeqLessEqual(uint16_t seq1, uint16_t seq2) {
+        return static_cast<int16_t>(seq1 - seq2) <= 0;
+    }
+
+    constexpr bool SeqGreater(uint16_t seq1, uint16_t seq2) {
+        return static_cast<int16_t>(seq1 - seq2) > 0;
+    }
+
+    CWND::CWND(size_t size)
+        : head(0),
+          tail(0),
+          buf_size(size),
+          current_size(0) {
+    }
+
+    Buffer& CWND::Get(uint16_t seq) {
+        auto it = buf.find(seq);
+
+        if (it == buf.end()) {
+            throw std::out_of_range("CWND::Get(): sequence not found");
+        }
+
+        return it->second;
+    }
+
+    void CWND::SetWindowSize(size_t size) {
+        buf_size = size;
+        return;
+    }
+
+    bool CWND::Push(uint16_t seq, Buffer newBuf) {
+        const auto dataSize = newBuf.GetSize();
+
+        if (current_size + dataSize > buf_size) {
+            NS_LOG_WARN("CWND::Push(): exceed window size");
+            return false;
+        }
+
+        if (buf.find(seq) != buf.end()) {
+            NS_LOG_INFO("CWND::Push(): duplicated seq");
+            return false;
+        }
+
+        if (buf.empty()) {
+            head = tail = seq;
+        } else {
+            if (SeqGreater(seq, tail)) {
+                tail = seq;
+            }
+        }
+        current_size += dataSize;
+        buf.emplace(seq, std::move(newBuf));
+        return true;
+    }
+
+    void CWND::Pop(uint16_t seq) {
+        if (buf.empty()) {
+            NS_LOG_WARN("CWND: buf is empty");
+            return;
+        }
+
+        uint16_t newHead{tail};
+        for (auto& [k, _] : buf) {
+            if (SeqGreater(seq, k) && SeqLessEqual(k, newHead)) {
+                newHead = k;
+            }
+        }
+        head = newHead;
+        for (auto& [k, _buf] : buf) {
+            if (!InWindow(k)) {
+                current_size -= _buf.GetSize();
+                buf.erase(k);
+                NS_LOG_INFO("auto pop seq: " << +k);
+            }
+        }
+    }
+
+    bool CWND::InWindow(uint16_t seq) {
+        if (buf.empty()) {
+            return false;
+        }
+        if (head == tail) {
+            return seq == head;
+        }
+        return SeqLessEqual(head, seq) && SeqLess(seq, tail);
+    }
+
+    FecBlock::FecBlock()
+        : ecc_block{0},
+          source_block{0},
+          ecc_offset(0) {
+    }
+
+    FecBlock::FecBlock(vector<Buffer>& ecc_block, vector<Buffer>& source_block)
+        : ecc_block(ecc_block),
+          source_block(source_block),
+          ecc_offset(ecc_block.size()) {
+    }
+
+    const Buffer& FecBlock::Get(uint16_t idx) const {
+        if (idx < ecc_offset) {
+            return ecc_block[idx];
+        } else {
+            return source_block[idx - ecc_offset];
+        }
+    }
+
+    size_t FecBlock::size() const {
+        return this->ecc_block.size() + this->source_block.size();
+    }
+
+    uint16_t FecBlock::GetEccLen() const {
+        return ecc_offset;
+    }
+
 } // namespace ns3

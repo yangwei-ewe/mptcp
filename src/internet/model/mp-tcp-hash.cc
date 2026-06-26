@@ -141,7 +141,7 @@ namespace ns3 {
         std::map<checksum_algo, std::string> name_of_algo = {{HMAC_MURMUR3, "HMAC_MURMUR3"},
                                                              {HMAC_SHA256, "HMAC_SHA256"},
                                                              {HMAC_UNKNOW, "HMAC_UNKNOW"}};
-        NS_LOG_FUNCTION(this << algo);
+        NS_LOG_FUNCTION(this << name_of_algo[algo]);
         switch (algo) {
         case checksum_algo::HMAC_MURMUR3:
             return std::make_shared<MpTcpMurMur>();

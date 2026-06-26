@@ -12,7 +12,9 @@
 #include "mp-tcp-typedefs.h"
 #include "tcp-option.h"
 
+#include "ns3/fec-helper.h"
 #include "ns3/gnuplot.h"
+#include "ns3/mp-tcp-ir.h"
 #include "ns3/output-stream-wrapper.h"
 #include "ns3/tcp-socket-base.h"
 
@@ -153,10 +155,16 @@ namespace ns3 {
                                  uint16_t port,
                                  Ptr<Ipv4Interface> interface);
         virtual bool SendPendingData(uint8_t sFlowId = -1);
+        virtual bool SendFecPendingData(uint8_t sFlowId = -1);
+        // virtual bool DoResent(uint8_t sFlowIdx);
         void SendEmptyPacket(uint8_t sFlowId, uint8_t flags);
         void SendRST(uint8_t sFlowIdx);
         void SendRST(uint8_t sFlowIdx, Reason reason);
         virtual int SendDataPacket(uint8_t sFlowIdx, uint32_t pktSize, bool withAck);
+        virtual int SendDataPacketV2(uint8_t sFlowIdx,
+                                     const Buffer& data,
+                                     const TcpHeader& header,
+                                     bool resent);
         // Connection closing operations
         virtual int DoClose(uint8_t sFlowIdx);
         bool CloseMultipathConnection(); // Close MPTCP connection is possible
@@ -207,6 +215,7 @@ namespace ns3 {
             uint8_t sFlowIdx,
             Ptr<Packet>,
             const TcpHeader&); // Recv of a data, put into buffer, call L7 to get it if necessary
+        virtual void ReceivedFecData(uint8_t sFlowIdx, Ptr<Packet>, const TcpHeader&);
         virtual void EstimateRtt(uint8_t sFlowIdx, const TcpHeader&);
         virtual void EstimateRtt(const TcpHeader&);
         virtual bool ReadOptions(uint8_t sFlowIdx,
@@ -226,6 +235,7 @@ namespace ns3 {
         virtual void DoRetransmit(uint8_t sFlowIdx, DSNMapping* ptrDSN);
         void SetReTxTimeout(uint8_t sFlowIdx);
         void ReTxTimeout(uint8_t sFlowIdx);
+        void FecTxTimeout(uint8_t sFlowIdx, DSNMapping* dsn = nullptr);
         virtual void Retransmit(uint8_t sFlowIdx);
         void LastAckTimeout(uint8_t sFlowIdx);
         void DiscardUpTo(uint8_t sFlowIdx, uint32_t ack);
@@ -254,7 +264,7 @@ namespace ns3 {
                                   Ipv4Address dst,
                                   uint16_t dPort); // LookupBy4-Tuple
 
-        virtual uint8_t getSubflowToUse(); // Called by SendPendingData() to get a subflow based on
+        virtual uint8_t GetNextSubflow(); // Called by SendPendingData() to get a subflow based on
         // round robin algorithm
         bool IsThereRoute(
             Ipv4Address src,
@@ -353,6 +363,19 @@ namespace ns3 {
 
         bool client;
         bool server;
+        bool fecEnable;
+        FecAlgorithm fecAlgorithm;
+        TcpOptionIRv2::State ir_state;
+        uint32_t fecBlockSize;
+
+        double min_fec_rate;
+        double max_fec_rate;
+        double fec_rate;
+
+        uint8_t min_fecBlock;
+        uint8_t max_fecBlock;
+
+        shared_ptr<MpTcpFec> fec;
 
         bool is_Checksumming; // according rfc 8684, checksumming must be negotiate during
                               // MP_CAPABLE,

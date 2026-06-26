@@ -116,10 +116,25 @@ namespace ns3 {
                       Max(Time("1s"), srtt + Max(Seconds(0), 4 * rttvar)).GetMilliSeconds()));
     }
 
-    void MpTcpSubFlow::AddDSNMapping(uint8_t sFlowIdx, uint64_t dSeqNum, uint16_t dLvlLen, uint32_t sflowSeqNum, uint32_t ack/*,
-            Ptr<Packet> pkt*/) {
+    void MpTcpSubFlow::AddDSNMapping(uint8_t sFlowIdx,
+                                     uint64_t dSeqNum,
+                                     uint16_t dLvlLen,
+                                     uint32_t sflowSeqNum,
+                                     uint32_t ack) {
         NS_LOG_FUNCTION_NOARGS();
-        mapDSN.push_back(new DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack /*, pkt*/));
+        mapDSN.push_back(new DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack));
+    }
+
+    void MpTcpSubFlow::AddDSNMapping(uint8_t sFlowIdx,
+                                     uint64_t dSeqNum,
+                                     uint16_t dLvlLen,
+                                     uint32_t sflowSeqNum,
+                                     uint32_t ack,
+                                     vector<Buffer>& ecc_block,
+                                     vector<Buffer>& src_block) {
+        NS_LOG_FUNCTION_NOARGS();
+        mapDSN.push_back(
+            new DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack, ecc_block, src_block));
     }
 
     void MpTcpSubFlow::SetFinSequence(const SequenceNumber32& s) {

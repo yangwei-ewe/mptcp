@@ -32,6 +32,7 @@ using namespace std;
 
 namespace ns3 {
     class DSNMapping;
+    class FecBlock;
 
     class MpTcpSubFlow : public Object {
       public:
@@ -44,7 +45,14 @@ namespace ns3 {
                            uint64_t dSeqNum,
                            uint16_t dLvlLen,
                            uint32_t sflowSeqNum,
-                           uint32_t ack /*, Ptr<Packet> pkt*/);
+                           uint32_t ack);
+        void AddDSNMapping(uint8_t sFlowIdx,
+                           uint64_t dSeqNum,
+                           uint16_t dLvlLen,
+                           uint32_t sflowSeqNum,
+                           uint32_t ack,
+                           vector<Buffer>& ecc_block,
+                           vector<Buffer>& src_block);
         void StartTracing(string traced);
         void CwndTracer(uint32_t oldval, uint32_t newval);
         void SetFinSequence(const SequenceNumber32& s);
@@ -102,25 +110,29 @@ namespace ns3 {
         vector<pair<double, double>> rtoTracer;
         vector<pair<double, double>> rttTracer;
 
-        vector<pair<double, double>> ssthreshtrack;
-        vector<pair<double, double>> CWNDtrack;
-        vector<pair<double, uint32_t>> DATA;
-        vector<pair<double, uint32_t>> ACK;
-        vector<pair<double, uint32_t>> DROP;
-        vector<pair<double, uint32_t>> RETRANSMIT;
-        vector<pair<double, uint32_t>> DUPACK;
-        vector<pair<double, double>> _ss;
-        vector<pair<double, double>> _ca;
-        vector<pair<double, double>> _FR_FA;
-        vector<pair<double, double>> _FR_PA;
-        vector<pair<double, double>> _FReTx;
-        vector<pair<double, double>> _TimeOut;
-        vector<pair<double, double>> _RTT;
-        vector<pair<double, double>> _AvgRTT;
-        vector<pair<double, double>> _RTO;
+        // vector<pair<double, double>> ssthreshtrack;
+        // vector<pair<double, double>> CWNDtrack;
+        // vector<pair<double, uint32_t>> DATA;
+        // vector<pair<double, uint32_t>> ACK;
+        // vector<pair<double, uint32_t>> DROP;
+        // vector<pair<double, uint32_t>> RETRANSMIT;
+        // vector<pair<double, uint32_t>> DUPACK;
+        // vector<pair<double, double>> _ss;
+        // vector<pair<double, double>> _ca;
+        // vector<pair<double, double>> _FR_FA;
+        // vector<pair<double, double>> _FR_PA;
+        // vector<pair<double, double>> _FReTx;
+        // vector<pair<double, double>> _TimeOut;
+        // vector<pair<double, double>> _RTT;
+        // vector<pair<double, double>> _AvgRTT;
+        // vector<pair<double, double>> _RTO;
+
+        uint32_t fec_block_range;
 
         uint32_t remoteRandom; // for MP_JOIN
         uint32_t localRandom;  // for MP_JOIN
+
+        // CWND window{0};
 
       private:
         std::unordered_map<uint32_t, Time> m_rttTracker;

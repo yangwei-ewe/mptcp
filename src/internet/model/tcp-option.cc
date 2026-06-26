@@ -8,6 +8,7 @@
 
 #include "tcp-option.h"
 
+#include "mp-tcp-ir.h"
 #include "mp-tcp-typedefs.h"
 #include "tcp-option-rfc793.h"
 #include "tcp-option-sack-permitted.h"
@@ -20,8 +21,7 @@
 
 #include <vector>
 
-namespace ns3
-{
+namespace ns3 {
 
     NS_LOG_COMPONENT_DEFINE("TcpOption");
 
@@ -33,14 +33,12 @@ namespace ns3
     TcpOption::~TcpOption() {
     }
 
-    TypeId
-        TcpOption::GetTypeId() {
+    TypeId TcpOption::GetTypeId() {
         static TypeId tid = TypeId("ns3::TcpOption").SetParent<Object>().SetGroupName("Internet");
         return tid;
     }
 
-    Ptr<TcpOption>
-        TcpOption::CreateOption(uint8_t kind) {
+    Ptr<TcpOption> TcpOption::CreateOption(uint8_t kind) {
         struct KindToTid {
             TcpOption::Kind kind;
             TypeId tid;
@@ -56,6 +54,7 @@ namespace ns3
             {TcpOption::SACKPERMITTED, TcpOptionSackPermitted::GetTypeId()},
             {TcpOption::SACK, TcpOptionSack::GetTypeId()},
             {TcpOption::MULTIPATH_TCP, TcpOptionMptcp::GetTypeId()},
+            {TcpOption::INSTANT_RECOVERY, TcpOptionIRv2::GetTypeId()},
             {TcpOption::UNKNOWN, TcpOptionUnknown::GetTypeId()},
         };
 
@@ -69,8 +68,7 @@ namespace ns3
         return CreateObject<TcpOptionUnknown>();
     }
 
-    bool
-        TcpOption::IsKindKnown(uint8_t kind) {
+    bool TcpOption::IsKindKnown(uint8_t kind) {
         switch (kind) {
         case END:
         case NOP:
@@ -80,6 +78,7 @@ namespace ns3
         case SACK:
         case TS:
         case MULTIPATH_TCP:
+        case INSTANT_RECOVERY:
             // Do not add UNKNOWN here
             return true;
         }
@@ -98,27 +97,23 @@ namespace ns3
     TcpOptionUnknown::~TcpOptionUnknown() {
     }
 
-    TypeId
-        TcpOptionUnknown::GetTypeId() {
+    TypeId TcpOptionUnknown::GetTypeId() {
         static TypeId tid = TypeId("ns3::TcpOptionUnknown")
-            .SetParent<TcpOption>()
-            .SetGroupName("Internet")
-            .AddConstructor<TcpOptionUnknown>();
+                                .SetParent<TcpOption>()
+                                .SetGroupName("Internet")
+                                .AddConstructor<TcpOptionUnknown>();
         return tid;
     }
 
-    void
-        TcpOptionUnknown::Print(std::ostream& os) const {
+    void TcpOptionUnknown::Print(std::ostream& os) const {
         os << "Unknown option";
     }
 
-    uint32_t
-        TcpOptionUnknown::GetSerializedSize() const {
+    uint32_t TcpOptionUnknown::GetSerializedSize() const {
         return m_size;
     }
 
-    void
-        TcpOptionUnknown::Serialize(Buffer::Iterator i) const {
+    void TcpOptionUnknown::Serialize(Buffer::Iterator i) const {
         if (m_size == 0) {
             NS_LOG_WARN("Can't Serialize an Unknown Tcp Option");
             return;
@@ -129,8 +124,7 @@ namespace ns3
         i.Write(m_content, m_size - 2);
     }
 
-    uint32_t
-        TcpOptionUnknown::Deserialize(Buffer::Iterator start) {
+    uint32_t TcpOptionUnknown::Deserialize(Buffer::Iterator start) {
         Buffer::Iterator i = start;
 
         m_kind = i.ReadU8();
@@ -139,7 +133,7 @@ namespace ns3
         m_size = i.ReadU8();
         if (m_size < 2 || m_size > 40) {
             NS_LOG_WARN("Unable to parse an unknown option of kind "
-                << int(m_kind) << " with apparent size " << int(m_size));
+                        << int(m_kind) << " with apparent size " << int(m_size));
             return 0;
         }
 
@@ -148,8 +142,7 @@ namespace ns3
         return m_size;
     }
 
-    uint8_t
-        TcpOptionUnknown::GetKind() const {
+    uint8_t TcpOptionUnknown::GetKind() const {
         return m_kind;
     }
 

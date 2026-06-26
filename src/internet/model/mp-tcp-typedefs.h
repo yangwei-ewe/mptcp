@@ -264,6 +264,21 @@ namespace ns3 {
         }
     };
 
+    class FecBlock {
+      public:
+        FecBlock();
+        FecBlock(vector<Buffer>& ecc_block, vector<Buffer>& source_block);
+        const Buffer& Get(uint16_t idx) const;
+
+        size_t size() const;
+        uint16_t GetEccLen() const;
+
+      private:
+        vector<Buffer> ecc_block;
+        vector<Buffer> source_block;
+        uint16_t ecc_offset;
+    };
+
     class DSNMapping {
       public:
         DSNMapping();
@@ -272,15 +287,46 @@ namespace ns3 {
                    uint16_t dLvlLen,
                    uint32_t sflowSeqNum,
                    uint32_t ack /*, Ptr<Packet> pkt*/);
+        // DSNMapping(uint8_t sFlowIdx,
+        //            uint64_t dSeqNum,
+        //            uint16_t dLvlLen,
+        //            uint32_t sflowSeqNum,
+        //            uint32_t ack,
+        //            FecBlock& fec);
+        DSNMapping(uint8_t sFlowIdx, // v2, receiver entry
+                   uint64_t dSeqNum,
+                   uint16_t dLvlLen,
+                   uint32_t sflowSeqNum,
+                   uint32_t ack,
+                   size_t min_pkg_num,
+                   size_t max_pkg_num);
+        DSNMapping(uint8_t sFlowIdx, // v2, sender entry
+                   uint64_t dSeqNum,
+                   uint16_t dLvlLen,
+                   uint32_t sflowSeqNum,
+                   uint32_t ack,
+                   const vector<Buffer>& ecc_block,
+                   const vector<Buffer>& src_block);
         // DSNMapping (const DSNMapping &res);
         virtual ~DSNMapping();
         bool operator<(const DSNMapping& rhs) const;
+        const Buffer& Get(size_t idx) const;
+        void Received(uint32_t seq_num, const Buffer& data);
+        size_t GetEccLength() const;
+        size_t size() const;
+
         uint64_t dataSeqNumber;
         uint16_t dataLevelLength;
         uint32_t subflowSeqNumber;
         uint32_t acknowledgement;
         uint32_t dupAckCount;
         uint8_t subflowIndex;
+        size_t minDecodePkt;
+        size_t maxFecRange;
+        // vector<pair<size_t, Buffer>> fec_blocks; // <seq num, Buffer>
+        map<size_t, Buffer> fec_blocks;
+        size_t ecc_length;
+        FecBlock buf;
         // uint8_t *packet;
     };
 
@@ -317,9 +363,7 @@ namespace ns3 {
             return this->subtype;
         };
 
-        virtual uint8_t GetLength() const
-
-        {
+        virtual uint8_t GetLength() const {
             return this->length;
         };
 
@@ -346,7 +390,7 @@ namespace ns3 {
         }
 
         void Print(std::ostream& os) const override {
-            os << "MPTCP Option: " << this->pkg->GetName() << ", Kind=" << +this->GetKind()
+            os << "MPTCP Option: " << this->pkg->GetName()
                << ", Length=" << +this->pkg->GetLength();
         }
 
@@ -1288,12 +1332,45 @@ namespace ns3 {
         uint32_t Retrieve(uint32_t size);
         Ptr<Packet> CreatePacket(uint32_t size);
         uint32_t ReadPacket(Ptr<Packet> pkt, uint32_t dataLen);
+        Buffer GetBuffer(size_t size);
+        size_t Get(uint8_t* dataBuf, size_t size);
+        // size_t GetSize() const;
         bool Empty();
         bool Full();
         bool ClearBuffer();
         uint32_t PendingData();
         uint32_t FreeSpaceSize();
         void SetBufferSize(uint32_t size);
+    };
+
+    class CWND {
+      public:
+        CWND(size_t size);
+        Buffer& Get(uint16_t seq);
+        bool Push(uint16_t seq, Buffer buf);
+        /**
+         * @brief
+         *
+         * @param seq
+         */
+        void Pop(uint16_t seq);
+        /**
+         * @brief Reset the window size to meet the cwnd requirement. Note that the window size to
+         * be set uses a "soft limit", which means that the buffer size will only take effect the
+         * first time the required value is reached.
+         *
+         * @param size size of windows
+         */
+        void SetWindowSize(size_t size);
+
+      private:
+        uint16_t head;
+        uint16_t tail;
+        size_t buf_size;
+        size_t current_size;
+        // Considering that multiple DSS segments may be in the cwnd simultaneously
+        unordered_map<uint16_t, Buffer> buf; /*<seq, buf>*/
+        bool InWindow(uint16_t seq);
     };
 
 } // namespace ns3
