@@ -68,6 +68,7 @@ namespace ns3 {
         m_limitedTxCount = 0;
         remoteRandom = UINT32_MAX;
         localRandom = UINT32_MAX;
+        m_rxByte = 0;
     }
 
     MpTcpSubFlow::~MpTcpSubFlow() {

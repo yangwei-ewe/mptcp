@@ -327,6 +327,8 @@ namespace ns3 {
         map<size_t, Buffer> fec_blocks;
         size_t ecc_length;
         FecBlock buf;
+        Time time;
+        friend ostream& operator<<(ostream& os, const DSNMapping& dsn);
         // uint8_t *packet;
     };
 
@@ -1326,7 +1328,7 @@ namespace ns3 {
         ~DataBuffer();
         queue<uint8_t> buffer;
         uint32_t bufMaxSize;
-        uint32_t Add(uint8_t* buf, uint32_t size);
+        uint32_t Add(const uint8_t* buf, uint32_t size);
         uint32_t Add(uint32_t size);
         // uint32_t Retrieve(uint8_t* buf, uint32_t size);
         uint32_t Retrieve(uint32_t size);

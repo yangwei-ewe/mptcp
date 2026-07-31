@@ -43,7 +43,8 @@ namespace ns3 {
         virtual int Close(uint8_t sFlowIdx); // Closing subflow...
         bool SendAllSubflowsFIN(void);
         uint32_t GetTxAvailable(); // Return available space in sending buffer to application
-        bool SendBufferedData(); // This would called SendPendingData() - TcpTxBuffer API need to be
+        bool SendBufferedData(uint8_t sFlowIdx = 255); // This would called SendPendingData() -
+                                                       // TcpTxBuffer API need to be
         // used in future!
         int FillBuffer(uint8_t* buf,
                        uint32_t size); // Fill sending buffer with data - TcpTxBuffer API
@@ -54,6 +55,7 @@ namespace ns3 {
         uint32_t Recv(
             uint32_t size); // Receive data from receiveing buffer - TcpRxBuffe API need to be
         // used in future!
+        Buffer AcceptRecvBuf(uint32_t size);
 
         // void allocateSendingBuffer(uint32_t size);  // Can be removed now as SetSndBufSize() is
         // implemented instead! void allocateRecvingBuffer(uint32_t size);  // Can be removed now as
@@ -242,7 +244,10 @@ namespace ns3 {
 
         // Re-ordering buffer
         bool StoreUnOrderedData(DSNMapping* ptr);
+        // bool StoreUnOrderedSymb(uint64_t dataSeqence, uint8_t sFlowIdx, DSNMapping* ptrDSN);
+        bool StoreUnOrderedSymb(uint8_t sFlowIdx, uint64_t dataSeqence, vector<uint8_t>& data);
         void ReadUnOrderedData();
+        void ReadUnOrderedSymb();
         bool FindPacketFromUnOrdered(uint8_t sFlowIdx);
 
         // Congestion control
@@ -323,7 +328,8 @@ namespace ns3 {
         bool mpEnabled; // a handle to enable mptcp
         bool mpTokenRegister;
         bool addrAdvertised;
-        bool fastTransmit; // trasmit data with third handshake
+        bool isEstablished; // according to rfc 8684 sec. 3.1, 3rd 3whs must be reliable,
+        bool fastTransmit;  // trasmit data with third handshake
         uint32_t localToken;
         uint32_t remoteToken;
         uint32_t unOrdMaxSize;
@@ -337,6 +343,9 @@ namespace ns3 {
         // map<size_t, shared_ptr<MpTcpAddressInfo>> remoteAddrs;
         // unordered_map<uint32_t, shared_ptr<Path>> links;
         list<DSNMapping*> unOrdered; // buffer that hold the out of sequence received packet
+        // std::map<uint64_t, std::pair<uint8_t, DSNMapping*>> // <dataSeq,<sFlowIdx, DSN>>
+        // unOrderedSymb; // buffer that hold the out of sequence received packet
+        std::map<uint64_t, std::vector<uint8_t>> unOrderedSymb;
 
         // Congestion control
         double alpha;

@@ -54,6 +54,9 @@ NS_LOG_COMPONENT_DEFINE("MpTcpSocketBase");
 using namespace std;
 
 namespace ns3 {
+
+    inline DSNMapping* FindDSN(Ptr<MpTcpSubFlow> subflow, uint32_t seqNum);
+
     NS_OBJECT_ENSURE_REGISTERED(MpTcpSocketBase);
     int16_t is_addrID_known(vector<shared_ptr<MpTcpAddressInfo>>& addresses, uint8_t id);
 
@@ -243,6 +246,8 @@ namespace ns3 {
         // TxBytes = 0;
         outputFileName = "NULL";
 
+        isEstablished = false;
+
         alpha = 1; // alpha is 1 by default
         _e = 1;    // epsilon 1 by default
         a = A_SCALE;
@@ -360,13 +365,25 @@ namespace ns3 {
 
     /** Called by ForwardUp() to estimate RTT */
     void MpTcpSocketBase::EstimateRtt(uint8_t sFlowIdx, const TcpHeader& mptcpHeader) {
-        NS_LOG_FUNCTION(this << (int)sFlowIdx);
+        NS_LOG_FUNCTION(this << +sFlowIdx << mptcpHeader);
         Ptr<MpTcpSubFlow> sFlow = pathManager[sFlowIdx]->get_subflow();
         auto _rtt = sFlow->RttAcked(mptcpHeader.GetAckNumber());
-        if (_rtt > Seconds(0)) {
+        if (_rtt > MilliSeconds(0)) {
+            NS_LOG_DEBUG("MpTcpSocketBase::EstimateRtt -> rtt: " << _rtt.GetMilliSeconds() << "ms");
             sFlow->rtt->Measurement(_rtt);
             sFlow->lastMeasuredRtt = _rtt;
             sFlow->measuredRTT.insert(sFlow->measuredRTT.end(), _rtt.GetSeconds());
+
+            if (fecEnable && this->ir_state == TcpOptionIRv2::State::Connect) {
+                auto ptrDSN = FindDSN(sFlow, mptcpHeader.ACK);
+                if (ptrDSN == nullptr) {
+                    NS_LOG_WARN("MpTcpSocketBase::EstimateRtt -> cannot find DSN???");
+                    return;
+                }
+                auto pack = this->fec->Update((ptrDSN->time - Simulator::Now()).GetMilliSeconds());
+                this->fecBlockSize = pack.first;
+                this->fec_rate = pack.second;
+            }
         }
 
         // Plotting
@@ -482,7 +499,10 @@ namespace ns3 {
                             (static_cast<uint64_t>(this->remoteToken) << 32) + this->localToken,
                             (static_cast<uint64_t>(sFlow->remoteRandom) << 32) +
                                 sFlow->localRandom);
+                        NS_LOG_DEBUG("[DEBUG] key-B: " << this->remoteToken
+                                                       << " key-A: " << this->localToken);
                         if (pkg->get_truncated_hmac64() != hmac) {
+                            // NS_ASSERT(false);
                             NS_LOG_WARN("Inconsistent HMAC");
                             SendRST(sFlowIdx, MPTCP_SPECIFIC_ERROR);
                         }
@@ -680,7 +700,11 @@ namespace ns3 {
         }
         // Different flags are different events
         else if (tcpflags == TcpHeader::ACK) {
+            this->isEstablished = true;
             ReceivedAck(sFlowIdx, packet, mptcpHeader);
+            if (server) {                                                       // server
+                pathManager.links[sFlowIdx]->get_subflow()->retxEvent.Cancel(); // ADD_ADDR
+            }
         } else if (tcpflags == TcpHeader::SYN) { // Received SYN, old NS-3 behaviour is to set state
                                                  // to SYN_RCVD and
             // respond with a SYN+ACK. But it is not a legal state transition as of
@@ -965,8 +989,10 @@ namespace ns3 {
                 NS_ASSERT(tcpflags != TcpHeader::ACK);
             }
             sFlow->state = ESTABLISHED;
-            NS_LOG_DEBUG("[MP_JOIN] recv 4th hand shake, pass!@"
-                         << Simulator::Now().GetMilliSeconds() << "ms");
+            NS_LOG_DEBUG("[MP_JOIN] sFlow[" << +sFlowIdx << "] recv 4th hand shake, pass!@"
+                                            << Simulator::Now().GetMilliSeconds() << "ms");
+            // NotifyDataSent(GetTxAvailable());
+            SendBufferedData(sFlowIdx);
         } else if (tcpflags == TcpHeader::SYN) {
             NS_ASSERT(tcpflags != TcpHeader::SYN);
         } else if (tcpflags ==
@@ -1042,7 +1068,7 @@ namespace ns3 {
             NS_LOG_INFO("ProcessSynSent(): remote token: " << this->remoteToken << "\tlocal token: "
                                                            << this->localToken);
             SendEmptyPacket(sFlowIdx, TcpHeader::ACK); // 3rd handshake
-
+            isEstablished = false;
             NS_LOG_INFO("local addr path binding: " << *(this->pathManager.localAddrs[0]->path));
             // this->pathManager.create_path(0, 0, m_boundnetdevice, m_tcp);
             // this->pathManager.links[0] = make_shared<Path>();
@@ -1054,7 +1080,7 @@ namespace ns3 {
             }
             // if (sFlow->retxEvent.)
             if (pathManager.size() > 1) {
-                SendFecPendingData(sFlowIdx); // in processSynSent()
+                SendBufferedData(sFlowIdx); // in processSynSent()
             }
             // NS_LOG_UNCOND("ProcessSynSent -> SubflowsSize: " << subflows.size());
         } // end of else if (SYN/ACK)
@@ -1088,6 +1114,52 @@ namespace ns3 {
 
         if (tcpflags == 0 ||
             (tcpflags == TcpHeader::ACK)) { // handshake is completed nicely in the receiver.
+            if (sFlowIdx) {                 // MP_JOIN
+                NS_LOG_INFO(" (" << sFlow->routeId << ") " << TcpStateName[sFlow->state]
+                                 << " -> ESTABLISHED");
+                sFlow->state = ESTABLISHED; // Subflow state is ESTABLISHED
+                sFlow->connected = true;    // This means subflow is established
+                sFlow->retxEvent
+                    .Cancel(); // This would cancel ReTxTimer where it being setup when SYN is sent.
+                // Danger? Does this assertion is correct? what if lack ack of 3WHS plus first
+                // d-packet get drop??! NS_ASSERT_MSG(sFlow->RxSeqNumber ==
+                // mptcpHeader.GetSequenceNumber().GetValue(), "Ops"); Following two lines are equal
+                // to this single statement "sFlow->MaxSeqNb =
+                // ++sFlow->TxSeqNumber";
+                sFlow->TxSeqNumber++;
+                sFlow->maxSeqNb = sFlow->TxSeqNumber - 1;
+                NS_ASSERT(sFlow->TxSeqNumber == mptcpHeader.GetAckNumber().GetValue());
+                SendEmptyPacket(sFlowIdx, TcpHeader::ACK);
+                return;
+            }
+            if (!mptcpHeader.HasOption(TcpOption::MULTIPATH_TCP)) {
+                NS_LOG_DEBUG("MpTcpSocketBase::ProcessSynRcvd -> There was no mptcp option here, "
+                             "while we're waiting 3rd handshake.");
+                return;
+            }
+            auto mptcp =
+                DynamicCast<const TcpOptionMptcp>(mptcpHeader.GetOption(TcpOption::MULTIPATH_TCP));
+            if (mptcp == nullptr) {
+                NS_LOG_DEBUG("MpTcpSocketBase::ProcessSynRcvd -> Cannot read mptcp option, "
+                             "while we're waiting 3rd handshake.");
+                return;
+            }
+            if (mptcp->GetSubType() != MP_CAPABLE) {
+                NS_LOG_DEBUG(
+                    "MpTcpSocketBase::ProcessSynRcvd -> There was no MP_CAPABLE option here, "
+                    "while we're waiting 3rd handshake.");
+                return;
+            }
+            auto capable = DynamicCast<const pkg_mp_capable>(mptcp->GetPackage());
+            if (capable == nullptr) {
+                NS_LOG_DEBUG("MpTcpSocketBase::ProcessSynRcvd -> Cannot read MP_CAPABLE option, "
+                             "while we're waiting 3rd handshake.");
+                return;
+            }
+            if (capable->get_receiver_key() != localToken) {
+                NS_FATAL_ERROR("receiver key dismatch localToken");
+                return;
+            }
             NS_LOG_INFO(" (" << sFlow->routeId << ") " << TcpStateName[sFlow->state]
                              << " -> ESTABLISHED");
             this->mpRecvState = this->mpSendState = MP_MPC;
@@ -1101,13 +1173,11 @@ namespace ns3 {
             // mptcpHeader.GetSequenceNumber().GetValue(), "Ops"); Following two lines are equal to
             // this single statement "sFlow->MaxSeqNb =
             // ++sFlow->TxSeqNumber";
+            NS_LOG_DEBUG("[DEBUG] localToken: " << localToken << " remoteToken: " << remoteToken);
+            NS_ASSERT(remoteToken);
             sFlow->TxSeqNumber++;
             sFlow->maxSeqNb = sFlow->TxSeqNumber - 1;
             NS_ASSERT(sFlow->TxSeqNumber == mptcpHeader.GetAckNumber().GetValue());
-            if (sFlowIdx) {
-                SendEmptyPacket(sFlowIdx, TcpHeader::ACK);
-                return;
-            }
             // Check MPTCP Connection status. If it is not yet ESTABLISHED then change it to true to
             // indicate that.
             if (m_connected != true) {
@@ -1175,7 +1245,7 @@ namespace ns3 {
         } else { // Other in-sequence input
             if (tcpflags !=
                 TcpHeader::RST) { // When (1) rx of SYN+ACK; (2) rx of FIN; (3) rx of bad flags
-                NS_LOG_LOGIC("Illegal flag " << tcpflags << " received. Reset packet is sent.");
+                NS_LOG_LOGIC("Illegal flag " << +tcpflags << " received. Reset packet is sent.");
                 //          if (m_endPoint)
                 //            {
                 //              m_endPoint->SetPeer(InetSocketAddress::ConvertFrom(fromAddress).GetIpv4(),
@@ -1331,11 +1401,16 @@ namespace ns3 {
     }
 
     inline DSNMapping* FindDSN(Ptr<MpTcpSubFlow> subflow, uint32_t seqNum) {
-        for (auto it : subflow->mapDSN) {
-            NS_LOG_DEBUG("FindDSN -> fec_blocks[0].GetSize() " << it->fec_blocks[0].GetSize());
-            if (seqNum >= it->subflowSeqNumber &&
-                seqNum <= it->subflowSeqNumber + it->maxFecRange * it->fec_blocks[0].GetSize()) {
-                NS_LOG_DEBUG("FindDSN(): found");
+        for (const auto it : subflow->mapDSN) {
+            // NS_LOG_DEBUG("FindDSN -> fec_blocks[0].GetSize() " << it->fec_blocks[0].GetSize());
+            // if (seqNum >= it->subflowSeqNumber &&
+            // seqNum <=
+            // it->subflowSeqNumber + (it->maxFecRange - 1) * it->fec_blocks[0].GetSize()) {
+            if ((seqNum >= it->subflowSeqNumber) &&
+                ((seqNum - it->subflowSeqNumber) % it->fec_blocks[0].GetSize() == 0) &&
+                (seqNum <=
+                 it->subflowSeqNumber + (it->maxFecRange - 1) * it->fec_blocks[0].GetSize())) {
+                // NS_LOG_DEBUG("FindDSN(): found");
                 return it;
             }
         }
@@ -1345,9 +1420,9 @@ namespace ns3 {
     void MpTcpSocketBase::ReceivedFecData(uint8_t sFlowIdx,
                                           Ptr<Packet> p,
                                           const TcpHeader& mptcpHeader) {
-        NS_LOG_FUNCTION(this << mptcpHeader);
+        NS_LOG_FUNCTION(this << +sFlowIdx << mptcpHeader);
         Ptr<MpTcpSubFlow> sFlow = pathManager[sFlowIdx]->get_subflow();
-        uint32_t expectedSeq = sFlow->RxSeqNumber;
+        // uint32_t expectedSeq = sFlow->RxSeqNumber;
         uint32_t Seq = mptcpHeader.GetSequenceNumber().GetValue();
         auto options = mptcpHeader.GetOptionList();
         // TcpOption* opt;
@@ -1409,10 +1484,17 @@ namespace ns3 {
                 SendEmptyPacket(sFlowIdx, TcpHeader::ACK);
             } else if (dss->get_data_seq() < nextRxSequence) { /* connection-level duplicate */
                 // NS_ASSERT(dss->get_data_seq() < nextRxSequence);
-                NS_LOG_INFO("Duplicate connection-level DSN " << dss->get_data_seq()
-                                                              << ", ignoring");
+                NS_LOG_INFO("Duplicate connection-level DSN Seq " << dss->get_data_seq()
+                                                                  << ", ignoring.");
                 // simply ack the current nextRxSequence so sender knows what we expect
                 SendEmptyPacket(sFlowIdx, TcpHeader::ACK);
+                return;
+            } else if (this->unOrderedSymb.size() > 10 &&
+                       dss->get_data_seq() > this->unOrderedSymb.rbegin()->first) {
+                NS_LOG_INFO("MpTcpSocketBase::ReceivedFecData -> rwnd is reach limit("
+                            << this->unOrderedSymb.size() << "), ignoring.");
+                // simply ack the current nextRxSequence so sender knows what we expect
+                // SendEmptyPacket(sFlowIdx, TcpHeader::ACK);
                 return;
             } else {
                 // if (dss->get_subflow_seq() == sFlow->RxSeqNumber) { /* in‐sequence at subflow
@@ -1421,9 +1503,10 @@ namespace ns3 {
                 // **/ uint32_t amountRead = recvingBuffer.ReadPacket(p,
                 // dss->get_data_level_length());
                 uint32_t block_width = p->GetSize(); // fec len_per_pkt
-                if (expectedSeq < sFlow->RxSeqNumber) {
-                    NotifyDataRecv();
-                }
+                // if (expectedSeq < sFlow->RxSeqNumber) {
+                //     NS_LOG_DEBUG("MpTcpSocketBase::ReceivedFecData() -> NotifyDataRecv");
+                //     NotifyDataRecv();
+                // }
 
                 if (block_width == 0) {
                     NS_FATAL_ERROR("Unexpected zero read when processing DSS option");
@@ -1434,6 +1517,10 @@ namespace ns3 {
                     NS_LOG_WARN("DSS declear length is smaller than actual length");
                     return;
                 }
+                if ((ptrDSN = FindDSN(sFlow, dss->get_subflow_seq()))) {
+                    sFlow->mapDSN.remove(ptrDSN);
+                    delete ptrDSN;
+                }
                 ptrDSN = new DSNMapping(sFlowIdx,
                                         dss->get_data_seq(),
                                         dss->get_data_level_length(),
@@ -1441,13 +1528,14 @@ namespace ns3 {
                                         mptcpHeader.GetSequenceNumber().GetValue(),
                                         ir->GetRange() - ir->GetEccRange() /* minimum decode pkt*/,
                                         ir->GetRange() /* to calulate pkt range*/);
+                NS_LOG_DEBUG("Received time: " << Simulator::Now().As(Time::MS));
                 sFlow->mapDSN.push_back(ptrDSN);
                 NS_LOG_INFO("MpTcpSocketBase::ReceivedFecData() -> DataSeq: "
                             << dss->get_data_seq()
                             << " DataLevelLength: " << dss->get_data_level_length()
                             << " SubflowSeq: " << mptcpHeader.GetSequenceNumber().GetValue() << "~"
                             << mptcpHeader.GetSequenceNumber().GetValue() +
-                                   ptrDSN->maxFecRange * p->GetSize());
+                                   (ptrDSN->maxFecRange - 1) * p->GetSize());
                 // Buffer buf(p->CopyData)
                 // vector<uint8_t> data(p->GetSize());
                 // p->
@@ -1481,61 +1569,81 @@ namespace ns3 {
         }
         if (!ptrDSN) {
             if ((ptrDSN = FindDSN(sFlow, Seq)) == nullptr) {
-                NS_LOG_WARN("could not find right DSN with Seq. num.:" << Seq << " ignored.");
+                NS_LOG_WARN(
+                    "MpTcpSocketBase::ReceivedFecData() -> Could not find right DSN with Seq. num.:"
+                    << Seq << " ignored.");
                 return;
             }
         }
+        NS_LOG_DEBUG("ptrDSN: " << *ptrDSN << " sizeof pkt=" << p->GetSize());
         size_t pkt_size{p->GetSize()};
+
         vector<uint8_t> data(pkt_size);
         p->CopyData(data.data(), pkt_size);
         // char peek[150];
         // memset(peek, 0, sizeof(peek));
         // memcpy(peek, data.data(), sizeof(peek) - 1);
         // NS_LOG_DEBUG("MpTcpSocketBase::ReceivedFecData -> peeking data: " << peek);
+
         Buffer buf;
         buf.AddAtEnd(pkt_size);
         auto in = buf.Begin();
+        if (ptrDSN->fec_blocks.size()) {
+            NS_ASSERT_MSG(ptrDSN->fec_blocks.begin()->second.GetSize() == pkt_size,
+                          "unmatch pkt size: " << ptrDSN->fec_blocks.begin()->second.GetSize()
+                                               << "!=" << pkt_size);
+        }
         in.Write(data.data(), pkt_size);
         ptrDSN->Received(Seq, buf);
         // NS_LOG_DEBUG("received pkt: " << ptrDSN->fec_blocks.size());
         if (ptrDSN->fec_blocks.size() >= ptrDSN->minDecodePkt) {
-            NS_LOG_INFO("received enough packet, try decode");
-            // for(fec->)
+            NS_LOG_INFO("MpTcpSocketBase::ReceivedFecData -> "
+                        << *ptrDSN << " ready to decode. @Time: "
+                        << Simulator::Now().GetMilliSeconds() << "ms");
+            // NS_LOG_INFO("received enough packet, try decode");
             vector<pair<int, Buffer>> fec_blocks;
             for (auto& block : ptrDSN->fec_blocks) {
                 fec_blocks.push_back(block);
             }
-            auto orig = this->fec->Decode(fec_blocks, ptrDSN->minDecodePkt);
+            auto orig = this->fec->Decode(fec_blocks, ptrDSN->GetEccLength(), ptrDSN->minDecodePkt);
             if (!orig.size()) {
                 NS_LOG_WARN("decode failed.");
+                sFlow->mapDSN.remove(ptrDSN);
+                delete ptrDSN;
                 return;
             }
+
+            const uint32_t dataSize{ptrDSN->dataLevelLength};
+            vector<uint8_t> data(dataSize);
+            uint32_t offset{0};
+            for (auto& it : orig) {
+                auto out = it.Begin();
+                uint32_t _readSize = std::min(it.GetSize(), dataSize - offset);
+                // NS_LOG_DEBUG("readSize: " << it.GetSize() << " dataSize: " << dataSize);
+                if (!_readSize) {
+                    break;
+                }
+                out.Read(data.data() + offset, _readSize);
+                offset += _readSize;
+            }
+            auto dataLength = data.size();
+            // uint8_t peek[10];
+            // memcpy(peek, data.data(), 9);
+            // NS_LOG_DEBUG("peek data: " << peek);
+            // this->nextRxSequence += dataLength;
+            sFlow->RxSeqNumber += (ptrDSN->fec_blocks[0].GetSize() * ptrDSN->maxFecRange);
+
             // NS_LOG_INFO("decode succ. sizeof(orig) " << orig.size());
             // uint8_t peek[200];
             // orig[0].CopyData(peek, sizeof(peek) - 1);
             // peek[199] = '\0';
             // NS_LOG_DEBUG("MpTcpSocketBase::ReceivedFecData -> peeking data: " << peek);
-            uint32_t dataSize{ptrDSN->dataLevelLength};
-            vector<uint8_t> data(orig[0].GetSize());
-            for (auto& it : orig) {
-                auto out = it.Begin();
-                uint32_t readSize = std::min(it.GetSize(), dataSize);
-                // NS_LOG_DEBUG("readSize: " << it.GetSize() << " dataSize: " << dataSize);
-                if (!readSize) {
-                    break;
-                }
-                out.Read(data.data(), readSize);
-                recvingBuffer.Add(data.data(), readSize);
-                dataSize -= readSize;
-            }
-            dataSize = ptrDSN->dataLevelLength;
-            NS_LOG_DEBUG("nextRxSequence " << nextRxSequence << " -> "
-                                           << nextRxSequence + dataSize);
-            nextRxSequence += dataSize;
-            sFlow->RxSeqNumber += (ptrDSN->fec_blocks[0].GetSize() * ptrDSN->maxFecRange);
             SendEmptyPacket(sFlowIdx, TcpHeader::ACK);
+            // StoreUnOrderedSymb(ptrDSN->dataSeqNumber, sFlowIdx, ptrDSN);
+            StoreUnOrderedSymb(sFlowIdx, ptrDSN->dataSeqNumber, data);
             sFlow->mapDSN.remove(ptrDSN);
             delete ptrDSN;
+            ReadUnOrderedSymb();
         }
         // sFlow->mapDSN.erase();
         // sFlow->RxSeqNumber + ptrDSN
@@ -1715,7 +1823,7 @@ namespace ns3 {
         uint32_t tmp = ((ack - sFlow->initialSequnceNumber) / sFlow->MSS) % mod;
         sFlow->ACK.push_back(make_pair(Simulator::Now().GetSeconds(), tmp));
 #endif
-
+        NS_LOG_DEBUG("MpTcpSocketBase::ReceivedAck -> TxSeqNum=" << sFlow->TxSeqNumber);
         // Stop execution if TCPheader is not ACK at all.
         if (0 == (mptcpHeader.GetFlags() & TcpHeader::ACK)) { // Ignore if no ACK flag
             // NS_ASSERT(3!=3);
@@ -2060,7 +2168,7 @@ namespace ns3 {
             return -1;
         }
         // SetReTxTimeout(sFlowIdx);
-        sFlow->RttSent(SequenceNumber32(sFlow->TxSeqNumber), false);
+        sFlow->RttSent(SequenceNumber32(sFlow->TxSeqNumber), resent);
         NS_LOG_DEBUG("send pkt size: " << p->GetSize());
         m_tcp->SendPacket(p, header, sFlow->sAddr, sFlow->dAddr, netDevice);
         // Update subflow statistics
@@ -2164,11 +2272,11 @@ namespace ns3 {
         }
 
         DSNMapping* ptrDSN = sFlow->GetunAckPkt();
-        if (ptrDSN == 0) {
+        if (ptrDSN == nullptr) {
             NS_LOG_INFO("Retransmit -> no Unacked data !! mapDSN size is "
-                        << sFlow->mapDSN.size() << " max Ack seq num " << sFlow->highestAck << " ("
-                        << (int)sFlowIdx << ")");
-            NS_ASSERT(3 != 3);
+                        << sFlow->mapDSN.size() << " max Ack seq num " << sFlow->highestAck
+                        << " of subflow[" << (int)sFlowIdx << "]");
+            // NS_ASSERT(false);
             return;
         }
 
@@ -2254,7 +2362,7 @@ namespace ns3 {
     }
 
     void MpTcpSocketBase::DoRetransmit(uint8_t sFlowIdx, DSNMapping* ptrDSN) {
-        NS_LOG_FUNCTION(this << hex << ptrDSN);
+        NS_LOG_FUNCTION(this << *ptrDSN);
         Ptr<MpTcpSubFlow> sFlow = pathManager[sFlowIdx]->get_subflow();
 
         // This retransmit segment should be the lost segment.
@@ -2309,10 +2417,7 @@ namespace ns3 {
         SetReTxTimeout(sFlowIdx);
 
         NS_LOG_WARN(Simulator::Now().GetSeconds()
-                    << " RetransmitSegment -> " << " localToken " << localToken << " Subflow "
-                    << (int)sFlowIdx << " DataSeq " << ptrDSN->dataSeqNumber << " SubflowSeq "
-                    << ptrDSN->subflowSeqNumber << " dataLength " << ptrDSN->dataLevelLength
-                    << " 3DupACK");
+                    << " DoRetransmit -> Subflow " << (int)sFlowIdx << " " << *ptrDSN);
         return;
         // uint8_t hlen = 5;
         // uint8_t olen = 20; // uint8_t olen = 15;
@@ -2508,10 +2613,10 @@ namespace ns3 {
         // sFlow->sAddr = m_endPoint->GetLocalAddress();
         // sFlow->sPort = m_endPoint->GetLocalPort();
         sFlow->MSS = segmentSize;
-        sFlow->cwnd = sFlow->MSS;
+        sFlow->cwnd = AdvertisedWindowSize();
         NS_LOG_UNCOND("Connect -> SegmentSize: "
-                      << sFlow->MSS << " tcpSegmentSize: " << this->segmentSize << " segmentSize: "
-                      << segmentSize << " SendingBufferSize: " << sendingBuffer.bufMaxSize);
+                      << sFlow->MSS << " tcpSegmentSize: " << this->segmentSize << "CWND: "
+                      << sFlow->cwnd << " SendingBufferSize: " << sendingBuffer.bufMaxSize);
 
         // This is master subsocket (master subflow) then its endpoint is the same as connection
         // endpoint.
@@ -2633,11 +2738,11 @@ namespace ns3 {
         return SetupCallback();
     }
 
-    bool MpTcpSocketBase::SendBufferedData() {
+    bool MpTcpSocketBase::SendBufferedData(uint8_t sFlowIdx) {
         if (fecEnable) {
-            return SendFecPendingData();
+            return SendFecPendingData(sFlowIdx);
         } else {
-            return SendPendingData();
+            return SendPendingData(sFlowIdx);
         }
     }
 
@@ -2783,11 +2888,11 @@ namespace ns3 {
 
     // Note: dont forget to handle resend mechanism
     bool MpTcpSocketBase::SendFecPendingData(uint8_t sFlowIdx) {
-        NS_LOG_FUNCTION(this);
+        NS_LOG_FUNCTION(this << +sFlowIdx);
         // No endPoint -> Can't send any data
         if (m_endPoint == 0) {
             NS_LOG_ERROR("[" << m_node->GetId()
-                             << "] MpTcpSocketBase::SendFecPendingData-> No endpoint");
+                             << "] MpTcpSocketBase::SendFecPendingData -> No endpoint");
             NS_ASSERT_MSG(m_endPoint != 0, " No endpoint");
             return false;
         }
@@ -2796,7 +2901,7 @@ namespace ns3 {
         uint8_t _sFlowIdx = sFlowIdx; // sFlowIdx might be undefined
         if (pathManager.links.find(sFlowIdx) == pathManager.links.end()) {
             _sFlowIdx = GetNextSubflow();
-            NS_LOG_INFO("MpTcpSocketBase::SendFecPendingData(): unfound subflow index "
+            NS_LOG_INFO("MpTcpSocketBase::SendFecPendingData -> unfound subflow index "
                         << +sFlowIdx << ", get new subflow " << +_sFlowIdx);
         }
         Ptr<MpTcpSubFlow> sF = pathManager[_sFlowIdx]->get_subflow();
@@ -2811,10 +2916,10 @@ namespace ns3 {
             //                        << (ir_state == TcpOptionIRv2::State::Connect)
             //                        << " bufferSize: " << sendingBuffer.buffer.size());
             if ((window = std::min(AvailableWindow(_sFlowIdx),
-                                   sF->MSS * (this->fecEnable ? fecBlockSize : 1))) > 0 &&
+                                   sF->MSS * fecBlockSize)) > 0 &&
                 (ir_state == TcpOptionIRv2::State::Connect) &&
                 (sendingBuffer.buffer.size() >= window)) { //
-                NS_LOG_DEBUG("subflow " << +_sFlowIdx << " process window size: " << window);
+                // NS_LOG_DEBUG("subflow " << +_sFlowIdx << " process window size: " << window);
                 vector<Buffer> source(fecBlockSize);
                 size_t len_per_symb = static_cast<int>(ceil(window * 1.0 / fecBlockSize));
 
@@ -2833,7 +2938,7 @@ namespace ns3 {
                     //     auto nxthop = out;
                     //     nxthop.Next(len_per_symb);
                     // in.Write(out, nxthop);
-                    in.Write(sendings.data() + offset, len_per_symb);
+                    in.Write(sendings.data() + offset, std::min(len_per_symb, window - offset));
                     offset += len_per_symb;
                     //     out = nxthop;
                 }
@@ -2851,6 +2956,7 @@ namespace ns3 {
                 //                   sF->TxSeqNumber,
                 //                   sF->RxSeqNumber,
                 //                   ecc_pkg, );
+                // NS_LOG_UNCOND("Send time: " << Simulator::Now().As(Time::MS));
                 DSNMapping* ptrDSN = nullptr;
                 sF->mapDSN.push_back(ptrDSN = new DSNMapping(_sFlowIdx,
                                                              nextTxSequence,
@@ -2862,9 +2968,28 @@ namespace ns3 {
                 NS_LOG_DEBUG("DSS Info subflowSeq: "
                              << ptrDSN->subflowSeqNumber << " dataSeq: " << ptrDSN->dataSeqNumber
                              << " dataLevelLength: " << ptrDSN->dataLevelLength << " sFlow["
-                             << +_sFlowIdx << "]->TxSeqNumber: " << sF->TxSeqNumber);
-                // Create base TCP header for all FEC packets
+                             << +_sFlowIdx << "] -> SeqNum: " << sF->TxSeqNumber << "~"
+                             << sF->TxSeqNumber + len_per_symb * (fecBlockSize - 1));
+
                 TcpHeader baseHeader;
+                if (!isEstablished) {
+                    NS_LOG_INFO("MpTcpSocketBase::SendFecPendingData -> resend MP_CAPABLE");
+
+                    // this->mpSendState = MP_MPC; // This state means MP_MPC is sent
+                    // NS_ASSERT(this->localToken != 0);
+                    this->mpSendState = MP_NONE;
+                    SendEmptyPacket(_sFlowIdx,
+                                    TcpHeader::ACK); // exceeding the size limit of tcp header
+                    // Ptr<TcpOptionMptcp> option = CreateObject<TcpOptionMptcp>(MP_CAPABLE);
+                    // Ptr<pkg_mp_capable> pkg = DynamicCast<pkg_mp_capable>(option->GetPackage());
+                    // pkg->set_sender_key(this->localToken);
+                    // pkg->set_receiver_key(this->remoteToken);
+                    // // if (this->fastTrasmit) {}
+                    // pkg->set_with_first_data(false);
+                    // pkg->set_checksum_algo(this->ChecksumAlgo);
+                    // baseHeader.AppendOption(option);
+                }
+                // Create base TCP header for all FEC packets
                 baseHeader.SetFlags(TcpHeader::PSH |
                                     TcpHeader::ACK); // Data packet, no special flags
                 baseHeader.SetSequenceNumber(SequenceNumber32(sF->TxSeqNumber));
@@ -2966,7 +3091,7 @@ namespace ns3 {
             default:
                 break;
             }
-            NS_LOG_DEBUG("tried subflow[" << nextSubFlow << "]");
+            // NS_LOG_DEBUG("tried subflow[" << nextSubFlow << "]");
         } while ((nextSubFlow != lastUsedsFlowIdx) &&
                  (pathManager.links[nextSubFlow]->get_subflow()->state != ESTABLISHED));
         return (lastUsedsFlowIdx = nextSubFlow);
@@ -2980,7 +3105,7 @@ namespace ns3 {
      4) Tcp back to slow start
      */
     void MpTcpSocketBase::ReTxTimeout(uint8_t sFlowIdx) { // Retransmit timeout
-        NS_LOG_FUNCTION(this);
+        NS_LOG_FUNCTION(this << *pathManager[sFlowIdx]);
         NS_ASSERT_MSG(client, "ReTxTimeout is not implemented for server side yet");
         Ptr<MpTcpSubFlow> sFlow = pathManager[sFlowIdx]->get_subflow();
 
@@ -3156,10 +3281,12 @@ namespace ns3 {
     }
 
     void MpTcpSocketBase::SetReTxTimeout(uint8_t sFlowIdx) {
+        // NS_LOG_FUNCTION(this << *pathManager[sFlowIdx]);
         Ptr<MpTcpSubFlow> sFlow = pathManager[sFlowIdx]->get_subflow();
         if (sFlow->retxEvent.IsExpired()) {
-            Time rto = sFlow->rtt->GetEstimate();
-            NS_LOG_DEBUG("MpTcpSocketBase::SetReTxTimeout -> rto time: " << rto.GetSeconds());
+            Time rto = sFlow->rtt->GetEstimate() + 4 * sFlow->rtt->GetVariation();
+            NS_LOG_DEBUG("[" << +sFlowIdx << "] MpTcpSocketBase::SetReTxTimeout -> rto time: "
+                             << rto.GetMilliSeconds() << " ms");
             sFlow->retxEvent =
                 Simulator::Schedule(rto, &MpTcpSocketBase::ReTxTimeout, this, sFlowIdx);
         }
@@ -3224,8 +3351,13 @@ namespace ns3 {
                 DiscardUpTo(sFlowIdx, ack.GetValue());
                 ptrDSN = getSegmentOfACK(sFlowIdx, ack.GetValue());
             }
-            NS_ASSERT(ptrDSN != 0);
-            DoRetransmit(sFlowIdx, ptrDSN);
+            if (ptrDSN == nullptr) {
+                NS_LOG_WARN(
+                    "NewAckNewReno -> partial ACK with no matching DSN; skipping retransmit."
+                    << " ack=" << ack.GetValue() << " subflow=" << +sFlowIdx);
+            } else {
+                DoRetransmit(sFlowIdx, ptrDSN);
+            }
 
             NewACK(sFlowIdx,
                    mptcpHeader,
@@ -3264,6 +3396,7 @@ namespace ns3 {
     }
 
     void MpTcpSocketBase::NewACK(uint8_t sFlowIdx, const TcpHeader& mptcpHeader, TcpOption* opt) {
+        NS_LOG_FUNCTION(this << +sFlowIdx << mptcpHeader);
         Ptr<MpTcpSubFlow> sFlow = pathManager[sFlowIdx]->get_subflow();
         uint32_t ack = (mptcpHeader.GetAckNumber()).GetValue();
         NS_LOG_LOGIC(
@@ -3303,6 +3436,7 @@ namespace ns3 {
 
         sFlow->highestAck = std::max(sFlow->highestAck, ack - 1);
         NS_LOG_WARN("NewACK-> sFlow->highestAck: " << sFlow->highestAck);
+        NS_LOG_INFO("NewACK-> mean while TxSeqNum=" << sFlow->TxSeqNumber);
 
         currentSublow = sFlow->routeId;
         SendFecPendingData(sFlow->routeId); // in newack()
@@ -3573,12 +3707,13 @@ namespace ns3 {
         // recvingBuffer = new DataBuffer(size);
         //  Size of recving buffer does not allocate any memory instantly but allows node to store
         //  to this bound.
-        recvingBuffer.SetBufferSize(50000000);
+        recvingBuffer.SetBufferSize(size);
     }
 
     uint32_t MpTcpSocketBase::GetRcvBufSize(void) const {
         // return m_rxBuffer.MaxBufferSize();
-        return 0;
+        // return 0;
+        return this->recvingBuffer.bufMaxSize;
     }
 
     uint32_t MpTcpSocketBase::Recv(uint32_t size) {
@@ -3586,6 +3721,13 @@ namespace ns3 {
         // Null packet means no data to read, and an empty packet indicates EOF
         uint32_t toRead = std::min(recvingBuffer.PendingData(), size);
         return recvingBuffer.Retrieve(toRead);
+    }
+
+    Buffer MpTcpSocketBase::AcceptRecvBuf(uint32_t size) {
+        NS_LOG_FUNCTION(this);
+        // Null packet means no data to read, and an empty packet indicates EOF
+        uint32_t toRead = std::min(recvingBuffer.PendingData(), size);
+        return recvingBuffer.GetBuffer(toRead);
     }
 
     void MpTcpSocketBase::ForwardUp(Ptr<Packet> p,
@@ -3611,9 +3753,10 @@ namespace ns3 {
         // p->CopyData((uint8_t*)peek, sizeof(peek));
         // peek[150] = '\0';
         // NS_LOG_DEBUG("MpTcpSocketBase::DoForwardUp() -> peek data " << peek);
-        NS_LOG_DEBUG(
-            "MpTcpSocketBase::DoForwardUp() -> header size: " << mptcpHeader.GetSerializedSize());
-        NS_LOG_DEBUG("MpTcpSocketBase::DoForwardUp() -> payload size: " << p->GetSize());
+        // NS_LOG_DEBUG(
+        //     "MpTcpSocketBase::DoForwardUp() -> header size: " <<
+        //     mptcpHeader.GetSerializedSize());
+        // NS_LOG_DEBUG("MpTcpSocketBase::DoForwardUp() -> payload size: " << p->GetSize());
         Address fromAddress = InetSocketAddress(header.GetSource(), port);
         Address toAddress =
             InetSocketAddress(header.GetDestination(), mptcpHeader.GetDestinationPort());
@@ -3681,7 +3824,7 @@ namespace ns3 {
         // uint32_t dataLen;   // packet's payload length
         remoteRecvWnd = (uint32_t)mptcpHeader.GetWindowSize(); // update the flow control window
 
-        if (mptcpHeader.GetFlags() &
+        if (mptcpHeader.GetFlags() ==
             TcpHeader::ACK) { // This function update subflow's lastMeasureRtt variable.
             EstimateRtt(sFlowIdx, mptcpHeader);
         }
@@ -3797,7 +3940,7 @@ namespace ns3 {
                     pathManager.create_path(local_id, remote_id, NetDev_of(local, m_node), m_tcp);
                 auto sFlow = pathManager[path_id]->get_subflow();
                 sFlow->MSS = segmentSize;
-                sFlow->cwnd = sFlow->MSS; // We should do this ... since cwnd is 0
+                sFlow->cwnd = AdvertisedWindowSize(); // We should do this ... since cwnd is 0
                 sFlow->state = SYN_SENT;
                 sFlow->cnTimeout = m_cnTimeout;
                 sFlow->cnRetries = m_cnRetries;
@@ -4102,6 +4245,75 @@ namespace ns3 {
         }
     }
 
+    // void MpTcpSocketBase::ReadUnOrderedSymb() {
+    //     NS_LOG_FUNCTION(this);
+    //     // NS_LOG_WARN("ReadUnOrderedSymb()-> Size: " << unOrdered.size());
+    //     std::map<const uint64_t, pair<uint8_t, DSNMapping*>>::iterator dsn_it{
+    //         unOrderedSymb.begin()};
+    //     while ((dsn_it != unOrderedSymb.end()) && (nextRxSequence == dsn_it->first)) {
+    //         auto& [sFlowIdx, ptrDSN] = dsn_it->second;
+    //         auto sFlow = pathManager.links[sFlowIdx]->get_subflow();
+    //         NS_ASSERT(sFlow);
+    //         vector<pair<int, Buffer>> fec_blocks;
+    //         for (auto& block : ptrDSN->fec_blocks) {
+    //             fec_blocks.push_back(block);
+    //         }
+    //         auto orig = this->fec->Decode(fec_blocks, ptrDSN->GetEccLength(),
+    //         ptrDSN->minDecodePkt); if (!orig.size()) {
+    //             NS_LOG_WARN("decode failed.");
+    //             return;
+    //         }
+    //         const uint32_t dataSize{ptrDSN->dataLevelLength};
+    //         vector<uint8_t> data(dataSize);
+    //         uint32_t offset{0};
+    //         for (auto& it : orig) {
+    //             auto out = it.Begin();
+    //             uint32_t _readSize = std::min(it.GetSize(), dataSize - offset);
+    //             // NS_LOG_DEBUG("readSize: " << it.GetSize() << " dataSize: " << dataSize);
+    //             if (!_readSize) {
+    //                 break;
+    //             }
+    //             out.Read(data.data() + offset, _readSize);
+    //             offset += _readSize;
+    //         }
+    //         auto dataLength = data.size();
+    //         // uint8_t peek[10];
+    //         // memcpy(peek, data.data(), 9);
+    //         // NS_LOG_DEBUG("peek data: " << peek);
+    //         this->recvingBuffer.Add(data.data(), static_cast<uint32_t>(dataLength));
+    //         NS_LOG_INFO(
+    //             "MpTcpSocketBase::ReadUnOrderedSymb -> acknowledge new data, nextRxSequence: "
+    //             << this->nextRxSequence << "->" << this->nextRxSequence + dataLength);
+    //         this->nextRxSequence += dataLength;
+    //         sFlow->RxSeqNumber += (ptrDSN->fec_blocks[0].GetSize() * ptrDSN->maxFecRange);
+    //         SendEmptyPacket(sFlowIdx, TcpHeader::ACK);
+    //         // NS_LOG_DEBUG("size of mapDSN: " << sFlow->mapDSN.size());
+    //         sFlow->mapDSN.remove(ptrDSN);
+    //         // NS_LOG_DEBUG("after delete: " << sFlow->mapDSN.size());
+    //         NotifyDataRecv();
+    //         delete ptrDSN;
+    //         ptrDSN = nullptr;
+    //         dsn_it = unOrderedSymb.erase(dsn_it);
+    //     }
+    //     return;
+    // }
+
+    void MpTcpSocketBase::ReadUnOrderedSymb() {
+        NS_LOG_FUNCTION(this);
+        // NS_LOG_WARN("ReadUnOrderedSymb()-> Size: " << unOrdered.size());
+        std::map<const uint64_t, vector<uint8_t>>::iterator data_it{unOrderedSymb.begin()};
+        while ((data_it != unOrderedSymb.end()) && (nextRxSequence == data_it->first)) {
+            this->recvingBuffer.Add(data_it->second.data(), data_it->second.size());
+            NS_LOG_INFO(
+                "MpTcpSocketBase::ReadUnOrderedSymb -> acknowledge new data, nextRxSequence: "
+                << this->nextRxSequence << "->" << this->nextRxSequence + data_it->second.size());
+            this->nextRxSequence += data_it->second.size();
+            data_it = this->unOrderedSymb.erase(data_it);
+        }
+        NotifyDataRecv();
+        return;
+    }
+
     uint8_t MpTcpSocketBase::ProcessOption(TcpOption* opt) {
         uint8_t originalSFlow = 255;
         if (opt != 0) {
@@ -4156,9 +4368,10 @@ namespace ns3 {
         } else {
             NS_LOG_WARN("Limited transmit is not enabled... DupAcks: " << ptrDSN->dupAckCount);
         }
-        //  else if (!sFlow->m_inFastRec && sFlow->m_limitedTx && sendingBuffer->PendingData() > 0)
-        //    { // RFC3042 Limited transmit: Send a new packet for each duplicated ACK before fast
-        //    retransmit
+        //  else if (!sFlow->m_inFastRec && sFlow->m_limitedTx && sendingBuffer->PendingData() >
+        //  0)
+        //    { // RFC3042 Limited transmit: Send a new packet for each duplicated ACK before
+        //    fast retransmit
         //      NS_LOG_INFO ("Limited transmit");
         //      uint32_t sz = SendDataPacket(sFlowIdx, sFlow->MSS, false); // WithAck or Without
         //      ACK? NotifyDataSent(sz);
@@ -4222,8 +4435,8 @@ namespace ns3 {
         oss.str("");
         return tmp;
         // stringstream detail;
-        // detail << "CC:" << PrintCC(AlgoCC) << "  sF:" << subflows.size() << " C:" << LinkCapacity
-        // / 1000 << "Kbps  RTT:" << RTT
+        // detail << "CC:" << PrintCC(AlgoCC) << "  sF:" << subflows.size() << " C:" <<
+        // LinkCapacity / 1000 << "Kbps  RTT:" << RTT
         //     << "Ms  D:" << totalBytes / 1000 << "Kb  dtQ(" << lostRate << ")  MSS:" <<
         //     segmentSize << "B";
         // return detail.str();
@@ -4432,9 +4645,9 @@ namespace ns3 {
 
     /*
      * Segments are stored in this buffer based on mptcp connection sequence number.
-     * So if a sub-flow's segment get delayed then other subflow's segments would be stored in-order
-     * here (subflow level). This function returns false only when incoming packet is already stored
-     * before!
+     * So if a sub-flow's segment get delayed then other subflow's segments would be stored
+     * in-order here (subflow level). This function returns false only when incoming packet is
+     * already stored before!
      */
     bool MpTcpSocketBase::StoreUnOrderedData(DSNMapping* toStore) {
         NS_LOG_FUNCTION(this);
@@ -4443,8 +4656,8 @@ namespace ns3 {
             if (toStore->dataSeqNumber == stored->dataSeqNumber) {
                 return false;
             } else if (toStore->dataSeqNumber < stored->dataSeqNumber) {
-                // This assertion is to make sure un-ordered segments are stored in-order of subflow
-                // & connection level.
+                // This assertion is to make sure un-ordered segments are stored in-order of
+                // subflow & connection level.
                 if (toStore->subflowIndex == stored->subflowIndex) {
                     NS_ASSERT(toStore->subflowSeqNumber < stored->subflowSeqNumber);
                 }
@@ -4454,6 +4667,60 @@ namespace ns3 {
             }
         }
         unOrdered.insert(unOrdered.end(), toStore);
+        return true;
+    }
+
+    // bool MpTcpSocketBase::StoreUnOrderedSymb(uint64_t dataSeqence,
+    //                                          uint8_t sFlowIdx,
+    //                                          DSNMapping* ptrDSN) {
+    //     NS_LOG_FUNCTION(this << sFlowIdx << *ptrDSN);
+    //     // if (unOrdered.find(toStore->dataSeqNumber) != unOrdered.end()) {
+    //     //     NS_LOG_WARN("MpTcpSocketBase::StoreUnOrderedData -> Duplicated DNS in unOrdered
+    //     //     DSN "
+    //     //                 "queue, ignored");
+    //     //     return false;
+    //     // }
+    //     // unOrdered.insert({toStore->dataSeqNumber, toStore});
+    //     if (dataSeqence < nextRxSequence) {
+    //         NS_LOG_WARN("MpTcpSocketBase::StoreUnOrderedSymb -> exception: dataSeqenece("
+    //                     << dataSeqence << ") is lower than nextRxSequence(" << nextRxSequence
+    //                     << ")");
+    //         return false;
+    //     } else if (unOrderedSymb.find(dataSeqence) != unOrderedSymb.end()) {
+    //         NS_LOG_WARN("MpTcpSocketBase::StoreUnOrderedSymb -> Duplicated DNS in unOrdered DSN "
+    //                     "queue, ignored");
+    //         return false;
+    //     }
+    //     // unOrderedSymb.insert({dataSeqence, {sFlowIdx, ptrDSN}});
+    //     unOrderedSymb.insert({dataSeqence, {sFlowIdx, ptrDSN}});
+    //     NS_LOG_DEBUG("MpTcpSocketBase::StoreUnOrderedSymb -> stored " << *ptrDSN);
+    //     return true;
+    // }
+
+    bool MpTcpSocketBase::StoreUnOrderedSymb(uint8_t sFlowIdx,
+                                             uint64_t dataSeqence,
+                                             vector<uint8_t>& data) {
+        NS_LOG_FUNCTION(this << sFlowIdx << dataSeqence << data.size());
+        // if (unOrdered.find(toStore->dataSeqNumber) != unOrdered.end()) {
+        //     NS_LOG_WARN("MpTcpSocketBase::StoreUnOrderedData -> Duplicated DNS in unOrdered
+        //     DSN "
+        //                 "queue, ignored");
+        //     return false;
+        // }
+        // unOrdered.insert({toStore->dataSeqNumber, toStore});
+        if (dataSeqence < nextRxSequence) {
+            NS_LOG_WARN("MpTcpSocketBase::StoreUnOrderedSymb -> exception: dataSeqenece("
+                        << dataSeqence << ") is lower than nextRxSequence(" << nextRxSequence
+                        << ")");
+            return false;
+        } else if (unOrderedSymb.find(dataSeqence) != unOrderedSymb.end()) {
+            NS_LOG_WARN("MpTcpSocketBase::StoreUnOrderedSymb -> Duplicated DNS in unOrdered DSN "
+                        "queue, ignored");
+            return false;
+        }
+        // unOrderedSymb.insert({dataSeqence, {sFlowIdx, ptrDSN}});
+        unOrderedSymb.insert({dataSeqence, data});
+        // NS_LOG_DEBUG("MpTcpSocketBase::StoreUnOrderedSymb -> stored " << *ptrDSN);
         return true;
     }
 
@@ -4498,7 +4765,8 @@ namespace ns3 {
             return;
         }
 
-        // Simultaneous close: Application invoked Close() when we are processing this FIN packet
+        // Simultaneous close: Application invoked Close() when we are processing this FIN
+        // packet
         if (sFlow->state == FIN_WAIT_1) { // This is not expecting this to happens... as our
                                           // implementation is not bidirectional.
             NS_LOG_INFO("(" << (int)sFlow->routeId
@@ -4518,16 +4786,16 @@ namespace ns3 {
         NS_ASSERT(sFlow->state == ESTABLISHED || sFlow->state == SYN_RCVD);
         /*
          * Receiver gets in-sequence FIN packet from sender.
-         * It sends ACK for it and also send its own FIN at the same time since our implementation
-         * is unidirectional i.e., receiver is not suppose to send data packet to sender and its
-         * sendingBuffer is uninitialized!
+         * It sends ACK for it and also send its own FIN at the same time since our
+         * implementation is unidirectional i.e., receiver is not suppose to send data packet to
+         * sender and its sendingBuffer is uninitialized!
          */
         // Move the state of subflow to CLOSE_WAIT
         NS_LOG_INFO("(" << (int)sFlow->routeId << ") " << TcpStateName[sFlow->state]
                         << " -> CLOSE_WAIT {DoPeerClose}");
         sFlow->state = CLOSE_WAIT;
-        Close(
-            sFlowIdx); // This would cause simultaneous close since receiver also want to close when
+        Close(sFlowIdx); // This would cause simultaneous close since receiver also want to
+                         // close when
         // she got FIN.
 
         if (sFlow->state == LAST_ACK) {
@@ -4598,8 +4866,8 @@ namespace ns3 {
     /** This function closes the endpoint completely. Called upon RST_TX action. */
     void MpTcpSocketBase::SendRST(uint8_t sFlowIdx) {
         NS_LOG_FUNCTION(this << (int)sFlowIdx); //
-        // cout << Simulator::Now().GetSeconds() << " [" << m_node->GetId() << "]{"<< flowId <<"}
-        // SendRST -> " << this << " ("<< (int) sFlowIdx << ")"<< endl;
+        // cout << Simulator::Now().GetSeconds() << " [" << m_node->GetId() << "]{"<< flowId
+        // <<"} SendRST -> " << this << " ("<< (int) sFlowIdx << ")"<< endl;
         SendEmptyPacket(sFlowIdx, TcpHeader::RST);
         NotifyErrorClose();
         DeallocateEndPoint(sFlowIdx);
@@ -4607,8 +4875,8 @@ namespace ns3 {
 
     void MpTcpSocketBase::SendRST(uint8_t sFlowIdx, Reason reason) {
         NS_LOG_FUNCTION(this << (int)sFlowIdx); //
-        // cout << Simulator::Now().GetSeconds() << " [" << m_node->GetId() << "]{"<< flowId <<"}
-        // SendRST -> " << this << " ("<< (int) sFlowIdx << ")"<< endl;
+        // cout << Simulator::Now().GetSeconds() << " [" << m_node->GetId() << "]{"<< flowId
+        // <<"} SendRST -> " << this << " ("<< (int) sFlowIdx << ")"<< endl;
         // SendEmptyPacket(sFlowIdx, TcpHeader::RST);
         Ptr<MpTcpSubFlow> sFlow = pathManager[sFlowIdx]->get_subflow();
         NS_LOG_DEBUG("SendRST(): " << *pathManager[sFlowIdx]);
@@ -4741,7 +5009,8 @@ namespace ns3 {
         NS_LOG_FUNCTION(this << (int)sFlowIdx << pathManager.size());
 
         Ptr<MpTcpSubFlow> sFlow = pathManager[sFlowIdx]->get_subflow();
-        // NS_LOG_INFO("DoClose -> Socket src/des (" << sFlow->sAddr << ":" << sFlow->sPort << "/"
+        // NS_LOG_INFO("DoClose -> Socket src/des (" << sFlow->sAddr << ":" << sFlow->sPort <<
+        // "/"
         // << sFlow->dAddr << ":" << sFlow->dPort << ")" << " state: " <<
         // TcpStateName[sFlow->state]);
         switch (sFlow->state) {
@@ -4754,8 +5023,8 @@ namespace ns3 {
             sFlow->state = FIN_WAIT_1;
             break;
         case CLOSE_WAIT:
-            // send FIN+ACK to close the peer (in normal scenario receiver should use this when she
-            // got FIN from sender)
+            // send FIN+ACK to close the peer (in normal scenario receiver should use this when
+            // she got FIN from sender)
             SendEmptyPacket(sFlowIdx, TcpHeader::FIN | TcpHeader::ACK);
             NS_LOG_INFO("(" << (int)sFlow->routeId << ") CLOSE_WAIT -> LAST_ACK {DoClose}");
             sFlow->state = LAST_ACK;
@@ -4818,9 +5087,9 @@ namespace ns3 {
             m_tcp->DeAllocate(m_endPoint);
             m_endPoint = 0;
             // m_tcp->RemoveLocalToken(localToken);
-            //  std::vector<Ptr<TcpSocketBase> >::iterator it = std::find(m_tcp->m_sockets.begin(),
-            //  m_tcp->m_sockets.end(), this); if (it != m_tcp->m_sockets.end()) {
-            //  m_tcp->m_sockets.erase(it);
+            //  std::vector<Ptr<TcpSocketBase> >::iterator it =
+            //  std::find(m_tcp->m_sockets.begin(), m_tcp->m_sockets.end(), this); if (it !=
+            //  m_tcp->m_sockets.end()) { m_tcp->m_sockets.erase(it);
             // }
             this->m_tcp->RemoveSocket(this);
             CancelAllSubflowTimers();
@@ -4828,8 +5097,8 @@ namespace ns3 {
         return true;
     }
 
-    // This function would calls NotifyNormalClose() where in turn calls mpTopology:HandlePeerClose
-    // where in turn calls close();
+    // This function would calls NotifyNormalClose() where in turn calls
+    // mpTopology:HandlePeerClose where in turn calls close();
     bool MpTcpSocketBase::CloseMultipathConnection() {
         NS_LOG_FUNCTION_NOARGS();
         bool closed = false;
@@ -4853,8 +5122,8 @@ namespace ns3 {
             }
         }
         if (cpt == pathManager.size()) {
-            if (m_state == ESTABLISHED && client) // We could remove client ... it should work but
-                                                  // it generate plots for receiver as well.
+            if (m_state == ESTABLISHED && client) // We could remove client ... it should work
+                                                  // but it generate plots for receiver as well.
             {
                 NS_LOG_INFO(
                     "CloseMultipathConnection -> GENERATE PLOTS SUCCESSFULLY -> HoOoOrA  pAck: "
@@ -5057,8 +5326,8 @@ namespace ns3 {
 
         for (uint32_t i = 0; i < interface->GetNAddresses(); i++) {
             NS_LOG_INFO("Node(" << interface->GetDevice()->GetNode()->GetId() << ") Interface("
-                                << indexOfInterface << ") Ipv4Index(" << i << ")" << " Ipv4Address("
-                                << interface->GetAddress(i).GetLocal() << ")");
+                                << indexOfInterface << ") Ipv4Index(" << i << ")"
+                                << " Ipv4Address(" << interface->GetAddress(i).GetLocal() << ")");
         }
     }
 
@@ -5108,7 +5377,7 @@ namespace ns3 {
     }
 
     uint16_t MpTcpSocketBase::AdvertisedWindowSize() {
-        return (uint16_t)segmentSize;
+        return (uint16_t)segmentSize * 10;
     }
 
     uint32_t MpTcpSocketBase::AvailableWindow(uint8_t sFlowIdx) {
@@ -5123,7 +5392,8 @@ namespace ns3 {
                                      << " sFlow->highestAck " << sFlow->highestAck
                                      << " freecwnd: " << freeCWND);
         // if (freeCWND < sFlow->MSS && sendingBuffer.PendingData() >= sFlow->MSS) {
-        //     NS_LOG_WARN("AvailableWindow: (" << (int)sFlowIdx << ") -> " << freeCWND << " => 0"
+        //     NS_LOG_WARN("AvailableWindow: (" << (int)sFlowIdx << ") -> " << freeCWND << " =>
+        //     0"
         //                                      << " MSS: " << sFlow->MSS);
         //     return 0;
         // } else {
@@ -5200,8 +5470,8 @@ namespace ns3 {
         // For now this should be happen only at server side
         NS_ASSERT(server);
 
-        // If a new subflow need to be created then src/dst pair should be already known to mptcp
-        // socket.
+        // If a new subflow need to be created then src/dst pair should be already known to
+        // mptcp socket.
         //  if (!IsLocalAddress(src) || !IsRemoteAddress(dst))
         //    return -1;
 
@@ -5492,9 +5762,9 @@ namespace ns3 {
     }
 
     void MpTcpSocketBase::calculateAlpha() {
-        // this method is called whenever a congestion happen in order to regulate the agressivety
-        // of subflows alpha = cwnd_total * MAX(cwnd_i / rtt_i^2) / {SUM(cwnd_i / rtt_i))^2}   //RFC
-        // 6356 formula (2)
+        // this method is called whenever a congestion happen in order to regulate the
+        // agressivety of subflows alpha = cwnd_total * MAX(cwnd_i / rtt_i^2) / {SUM(cwnd_i /
+        // rtt_i))^2}   //RFC 6356 formula (2)
 
         NS_LOG_FUNCTION_NOARGS();
         alpha = 0;
@@ -5532,29 +5802,34 @@ namespace ns3 {
 
     void MpTcpSocketBase::DestroyUnOrdered() {
         NS_LOG_FUNCTION_NOARGS();
-        for (std::list<DSNMapping*>::iterator i = unOrdered.begin(); i != unOrdered.end(); i++) {
-            i = unOrdered.erase(i);
-        }
-        unOrdered.clear();
+        // for (std::list<DSNMapping*>::iterator i = unOrdered.begin(); i != unOrdered.end();
+        // i++) {
+        //     i = unOrdered.erase(i);
+        // }
+        // unOrdered.clear();
+        return;
     }
 
     /** Kill this socket. This is a callback function configured to m_endpoint in
      SetupCallback(), invoked when the endpoint is destroyed. */
     void MpTcpSocketBase::Destroy(void) {
         NS_LOG_FUNCTION(this); //
-        // NS_LOG_INFO("Enter Destroy(" << this << ") m_sockets:  " << m_tcp->m_sockets.size() <<
+        // NS_LOG_INFO("Enter Destroy(" << this << ") m_sockets:  " << m_tcp->m_sockets.size()
+        // <<
         // ")");
         m_endPoint = 0;
         if (m_tcp != nullptr) {
             this->m_tcp->RemoveSocket(this);
             // std::vector<Ptr<TcpSocketBase> >::iterator it =
-            // std::find(this->m_tcp->m_sockets.begin(), this->m_tcp->m_sockets.end(), this); if (it
+            // std::find(this->m_tcp->m_sockets.begin(), this->m_tcp->m_sockets.end(), this); if
+            // (it
             // != m_tcp->m_sockets.end()) {
             //     m_tcp->m_sockets.erase(it);
             // }
         }
         CancelAllSubflowTimers();
-        // NS_LOG_INFO("Leave Destroy(" << this << ") m_sockets:  " << m_tcp->m_sockets.size() <<
+        // NS_LOG_INFO("Leave Destroy(" << this << ") m_sockets:  " << m_tcp->m_sockets.size()
+        // <<
         // ")");
     }
 

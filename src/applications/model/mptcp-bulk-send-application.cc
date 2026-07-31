@@ -40,9 +40,26 @@ namespace ns3 {
 
     NS_OBJECT_ENSURE_REGISTERED(MpTcpBulkSendApplication);
 
-    uint8_t stuffing[] = "God save our gracious King/Queen! Long live our noble King/Queen! God "
-                         "save the King/Queen! Send him/her victorious, Happy and glorious, Long "
-                         "to reign over us, God save the King/Queen . ................";
+    uint8_t stuffing[] =
+        "With the rapid growth of online video platforms and the escalating volume of video "
+        "content, the need for proficient video understanding tools has increased significantly. "
+        "Given the remarkable capabilities of large language models (LLMs) in language and "
+        "multimodal tasks, this survey provides a detailed overview of recent advances in video "
+        "understanding that harness the power of LLMs (Vid-LLMs). The emergent capabilities of "
+        "Vid-LLMs are surprisingly advanced, particularly their ability for open-ended "
+        "multi-granularity (abstract, temporal, and spatiotemporal) reasoning combined with "
+        "common-sense knowledge, suggesting a promising path for future video understanding. We "
+        "examine the unique characteristics and capabilities of Vid-LLMs, categorizing the "
+        "approaches into three main types: Video Analyzer × LLM, Video Embedder × LLM, and "
+        "(Analyzer + Embedder) × LLM. We identify five subtypes based on the functions of LLMs in "
+        "Vid-LLMs: LLM as Summarizer, LLM as Manager, LLM as Text Decoder, LLM as Regressor, and "
+        "LLM as Hidden Layer. This survey also presents a comprehensive study of the tasks, "
+        "datasets, benchmarks, and evaluation methods for Vid-LLMs. Additionally, it explores the "
+        "extensive applications of Vid-LLMs in various domains, highlighting their remarkable "
+        "scalability and versatility in real-world video understanding challenges. Additionally, "
+        "it summarizes the limitations of existing Vid-LLMs and outlines directions for future "
+        "research. For more information, readers are encouraged to visit the repository at "
+        "https://github.com/yunlong10/Awesome-LLMs-for-Video-Understanding.";
 
     TypeId MpTcpBulkSendApplication::GetTypeId(void) {
         static TypeId tid =
@@ -181,7 +198,7 @@ namespace ns3 {
             m_totBytes += actual;
             NS_LOG_DEBUG("toSend: " << toSend << " actual: " << actual
                                     << " totalByte: " << m_totBytes);
-            NS_LOG_UNCOND("send time " << Simulator::Now().As(Time::MS));
+            // NS_LOG_UNCOND("send time " << Simulator::Now().As(Time::MS));
             m_socket->SendBufferedData();
         }
         NS_LOG_DEBUG("SendData is ended!");

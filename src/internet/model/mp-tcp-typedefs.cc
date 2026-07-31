@@ -457,7 +457,7 @@ namespace ns3 {
                            uint32_t sflowSeqNum,
                            uint32_t ack,
                            const vector<Buffer>& ecc_block,
-                           const vector<Buffer>& src_block)
+                           const vector<Buffer>& src_block) // v2, sender entry
         : DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack) {
         // subflowIndex = sFlowIdx;
         // dataSeqNumber = dSeqNum;
@@ -470,15 +470,16 @@ namespace ns3 {
         //     fec_blocks.push_back({seq_num, it});
         //     seq_num += it.GetSize();
         // }
-        for (const auto& it : ecc_block) {
-            fec_blocks[seq_num++] = it;
-        }
-        this->ecc_length = seq_num;
         for (const auto& it : src_block) {
             fec_blocks[seq_num++] = it;
         }
-        this->minDecodePkt = seq_num - ecc_length;
+        this->minDecodePkt = seq_num;
+        for (const auto& it : ecc_block) {
+            fec_blocks[seq_num++] = it;
+        }
+        this->ecc_length = ecc_block.size();
         this->maxFecRange = seq_num;
+        this->time = Simulator::Now();
         // packet = new uint8_t[dLvlLen];
         // pkt->CopyData(packet, dLvlLen);
     }
@@ -493,6 +494,9 @@ namespace ns3 {
         : DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack) {
         minDecodePkt = min_pkg_num;
         maxFecRange = max_pkg_num;
+        NS_ASSERT_MSG(maxFecRange >= minDecodePkt,
+                      "FEC range cannot be smaller than its decode threshold");
+        ecc_length = maxFecRange - minDecodePkt;
     }
 
     /*
@@ -534,12 +538,25 @@ namespace ns3 {
         if (this->fec_blocks.size() == 0) {
             NS_ASSERT(this->subflowSeqNumber == seq_num);
             this->fec_blocks[0] = data;
+            NS_LOG_DEBUG("DSNMapping::Received() -> received idx: " << idx
+                                                                    << " size: " << data.GetSize());
+            return;
+        }
+        idx = (seq_num - this->subflowSeqNumber) / this->fec_blocks[0].GetSize();
+        // minDecodePkt is the number of symbols needed to decode (k), not the
+        // number of symbols carried by the FEC block (n).  In particular, the
+        // repair symbols have indexes [k, n), and must be retained: any k of
+        // the n Reed-Solomon symbols can reconstruct the source block.
+        if (idx >= this->maxFecRange) {
+            NS_LOG_WARN("DSNMapping::Received -> symbol index " << idx
+                                                                  << " is outside FEC range "
+                                                                  << maxFecRange);
+            return;
         } else {
-            idx = (seq_num - this->subflowSeqNumber) / this->fec_blocks[0].GetSize();
+            NS_LOG_DEBUG("DSNMapping::Received() -> received idx: " << idx
+                                                                    << " size: " << data.GetSize());
             this->fec_blocks[idx] = data;
         }
-        NS_LOG_DEBUG("DSNMapping::Received() -> received idx: " << idx
-                                                                << " size: " << data.GetSize());
         // uint8_t peek[50];
         // data.CopyData(peek, sizeof(peek));
         // // peek[199] = '\0';
@@ -549,6 +566,12 @@ namespace ns3 {
         // }
         // NS_LOG_DEBUG("DSNMapping::Received -> received data: " << ss.str());
         return;
+    }
+
+    ostream& operator<<(ostream& os, const DSNMapping& dsn) {
+        os << "DSNMapping(subflowSeq=" << dsn.subflowSeqNumber << " dataSeq=" << dsn.dataSeqNumber
+           << " dataLevelLength=" << dsn.dataLevelLength << ")";
+        return os;
     }
 
     size_t DSNMapping::GetEccLength() const {
@@ -594,7 +617,7 @@ namespace ns3 {
         return qty;
     }
 
-    uint32_t DataBuffer::Add(uint8_t* buf, uint32_t size) {
+    uint32_t DataBuffer::Add(const uint8_t* buf, uint32_t size) {
         // read data from buf and insert it into the DataBuffer instance
         NS_LOG_FUNCTION(this << buf << size);
         NS_ASSERT_MSG((buf != nullptr), "DataBuffer::Add -> input buffer is null !");
@@ -732,7 +755,7 @@ namespace ns3 {
     }
 
     Buffer DataBuffer::GetBuffer(size_t size) {
-        NS_LOG_FUNCTION(this);
+        NS_LOG_FUNCTION(this << size);
         Buffer buf;
         if (this->buffer.size() < size) {
             NS_LOG_ERROR("no enough data in buf");

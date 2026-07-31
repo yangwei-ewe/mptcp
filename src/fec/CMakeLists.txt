@@ -1,13 +1,12 @@
 set( header_files
     helper/fec-helper.h
     model/fec.h
-    # model/rscode-gf.hpp
-    # model/rscode-poly.hpp
-    # model/rscode.h
+    model/reed_solomon.h
 )
 
 set( source_files
     model/fec.cc
+    model/reed_solomon.cc
 )
 
 build_lib(

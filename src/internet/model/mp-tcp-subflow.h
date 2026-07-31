@@ -131,6 +131,8 @@ namespace ns3 {
 
         uint32_t remoteRandom; // for MP_JOIN
         uint32_t localRandom;  // for MP_JOIN
+        uint64_t m_rxByte;
+        uint64_t m_txByte;
 
         // CWND window{0};
 

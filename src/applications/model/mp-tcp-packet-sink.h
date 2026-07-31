@@ -59,14 +59,17 @@ namespace ns3 {
         void HandleAccept(Ptr<Socket>, const Address& from);
         void HandlePeerClose(Ptr<Socket>);
         void HandlePeerError(Ptr<Socket>);
+        void DumpRxBuffer(void);
 
         Ptr<MpTcpSocketBase> m_socket;       // Listening socket
         std::list<Ptr<Socket>> m_socketList; // the accepted sockets
 
-        Address m_local;    // Local address to bind to
-        uint32_t m_totalRx; // Total bytes received
-        TypeId m_tid;       // Protocol TypeId
+        Address m_local;             // Local address to bind to
+        uint32_t m_totalRx;          // Total bytes received
+        TypeId m_tid;                // Protocol TypeId
+        std::string m_bufExportFile; //!< file to export rx buffer
         uint32_t size;
+        ofstream m_export;
         // uint8_t    *buf;
         TracedCallback<Ptr<const Packet>, const Address&> m_rxTrace;
     };

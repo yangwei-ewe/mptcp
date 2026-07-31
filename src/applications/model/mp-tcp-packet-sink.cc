@@ -32,6 +32,7 @@
 #include "ns3/simulator.h"
 #include "ns3/socket-factory.h"
 #include "ns3/socket.h"
+#include "ns3/string.h"
 #include "ns3/trace-source-accessor.h"
 #include "ns3/udp-socket-factory.h"
 #include "ns3/udp-socket.h"
@@ -91,9 +92,13 @@ namespace ns3 {
                               TypeIdValue(TcpSocketFactory::GetTypeId()),
                               MakeTypeIdAccessor(&MpTcpPacketSink::m_tid),
                               MakeTypeIdChecker())
-            //    .AddTraceSource ("Rx", "A packet has been received",
-            //                     MakeTraceSourceAccessor (&MpTcpPacketSink::m_rxTrace))
-            ;
+                .AddAttribute("ExportFileName",
+                              "file to export rx buffer.",
+                              StringValue(""),
+                              MakeStringAccessor(&MpTcpPacketSink::m_bufExportFile),
+                              MakeStringChecker());
+        //    .AddTraceSource ("Rx", "A packet has been received",
+        //                     MakeTraceSourceAccessor (&MpTcpPacketSink::m_rxTrace));
         return tid;
     }
 
@@ -114,7 +119,6 @@ namespace ns3 {
     void MpTcpPacketSink::DoDispose(void) {
         NS_LOG_FUNCTION(this);
         m_socket = 0;
-
         // chain up
         Application::DoDispose();
     }
@@ -158,7 +162,6 @@ namespace ns3 {
             acceptedSocket->Close();
             NS_LOG_INFO("MpTcpPacketSink -> Now SocketListSize is " << m_socketList.size());
         }
-
         if (m_socket) {
             NS_LOG_INFO("MpTcpPacketSink -> FINALY closing the listening socket, " << m_socket);
             m_socket->Close();
@@ -169,9 +172,22 @@ namespace ns3 {
     void MpTcpPacketSink::HandleRead(Ptr<Socket> socket) {
         NS_LOG_FUNCTION(this << m_socket);
         Ptr<MpTcpSocketBase> mpSocket = DynamicCast<MpTcpSocketBase>(socket);
-        uint32_t dataAmount = mpSocket->Recv(size);
+        // uint32_t dataAmount = mpSocket->Recv(size);
+        Buffer buf = mpSocket->AcceptRecvBuf(size);
+        uint32_t dataAmount = buf.GetSize();
         // uint32_t dataAmount = m_socket->Recv(buf, size);
         m_totalRx += dataAmount;
+        if (m_export) {
+            uint8_t tmp[128];
+            auto toRead = dataAmount;
+            size_t readSize;
+            auto it = buf.Begin();
+            while ((readSize = std::min(sizeof(tmp), static_cast<size_t>(toRead)))) {
+                it.Read(tmp, readSize);
+                m_export.write((char*)tmp, readSize);
+                toRead -= readSize;
+            }
+        }
         NS_LOG_INFO("MpTcpPacketSink:HandleRead() -> Received " << dataAmount << " bytes total Rx "
                                                                 << m_totalRx);
     }
@@ -202,6 +218,15 @@ namespace ns3 {
         //  s->SetCloseCallbacks(MakeCallback(&MpTcpPacketSink::HandlePeerClose, this),
         //      MakeCallback(&MpTcpPacketSink::HandlePeerError, this));
         m_socketList.push_back(s);
+        if (this->m_bufExportFile != "") {
+            m_export.open(this->m_bufExportFile);
+            if (!m_export) {
+                NS_LOG_WARN("Cannot open file.");
+            } else {
+                NS_LOG_INFO("Dump sendings to file " << m_bufExportFile << ".");
+            }
+        }
+
         NS_LOG_INFO("MptcpPacketSink got an new connection. SocketList: " << m_socketList.size());
     }
 

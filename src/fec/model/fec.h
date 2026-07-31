@@ -39,8 +39,10 @@ namespace ns3 {
          * @return std::vector<Buffer>
          */
         virtual std::vector<Buffer> Decode(const std::vector<std::pair<int, Buffer>>& symbols,
+                                           size_t ecc_len,
                                            size_t dest_pack_num);
         virtual std::vector<Buffer> Decode(const std::map<int, Buffer>& symbol,
+                                           size_t ecc_len,
                                            size_t dest_pack_num);
 
         // virtual bool IsDecodeAble(const std::vector<std::pair<int, Buffer>>& symbols,
@@ -71,8 +73,17 @@ namespace ns3 {
          */
         virtual std::vector<SymbBlock> EncodeImpl(const std::vector<SymbBlock>& symb,
                                                   size_t ecc_len) = 0;
+        /**
+         * @brief
+         *
+         * @param symbol
+         * @param ecc_len
+         * @param pack_num
+         * @return std::vector<SymbBlock>
+         */
         virtual std::vector<SymbBlock> DecodeImpl(
             const std::vector<std::pair<int, SymbBlock>>& symbol,
+            size_t ecc_len,
             size_t pack_num) = 0;
         // virtual std::vector<SymbBlock> DecodeImpl(const std::map<int, SymbBlock>& symbol,
         //                                           size_t pack_num) = 0;
@@ -89,6 +100,7 @@ namespace ns3 {
         std::vector<SymbBlock> EncodeImpl(const std::vector<SymbBlock>& symb,
                                           size_t ecc_len) override;
         std::vector<SymbBlock> DecodeImpl(const std::vector<std::pair<int, SymbBlock>>& symbol,
+                                          size_t ecc_len,
                                           size_t pack_num) override;
     };
 } // namespace ns3
