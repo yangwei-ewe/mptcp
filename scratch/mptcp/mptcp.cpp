@@ -14,6 +14,7 @@
 #include "ns3/applications-module.h"
 #include "ns3/core-module.h"
 #include "ns3/flow-monitor-module.h"
+#include "ns3/ge-error-model.h"
 #include "ns3/internet-module.h"
 #include "ns3/network-module.h"
 #include "ns3/point-to-point-module.h"
@@ -58,8 +59,8 @@ int main(int argc, char* argv[]) {
     // Config::SetDefault("ns3::MpTcpPacketSink::ExportFileName", StringValue("rx_buf.txt"));
     // Config::SetDefault("ns3::MpTcpBulkSendApplication::MaxBytes", UintegerValue(0));
 
-    auto rand = 1783961193; // 3rd 3whs dropped
-    // auto rand = 1785420965; // super low thoughput
+    // auto rand = 1783961193; // 3rd 3whs dropped
+    auto rand = 1787252424U;
     // auto rand = time(NULL);
     std::cout << "Random number: " << rand << std::endl;
     RngSeedManager::SetSeed(rand);
@@ -85,19 +86,19 @@ int main(int argc, char* argv[]) {
     NetDeviceContainer dev1 = p2p1.Install(nodes);
     ipv4.SetBase("10.1.1.0", "255.255.255.0");
     Ipv4InterfaceContainer i = ipv4.Assign(dev1);
-    Ptr<RateErrorModel> em1 = CreateObject<RateErrorModel>();
-    em1->SetRate(0.10);
+    auto em1 = CreateObject<GEErrorModel>();
+    em1->SetPlr(0.10);
     dev1.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em1));
 
     // --- 第二條鏈路 (10.1.2.0) ---
     PointToPointHelper p2p2;
-    p2p2.SetDeviceAttribute("DataRate", StringValue("100Kbps"));
-    p2p2.SetChannelAttribute("Delay", StringValue("2ms"));
+    p2p2.SetDeviceAttribute("DataRate", StringValue("1Mbps"));
+    p2p2.SetChannelAttribute("Delay", StringValue("25ms"));
     NetDeviceContainer dev2 = p2p2.Install(nodes);
     ipv4.SetBase("10.1.2.0", "255.255.255.0");
     Ipv4InterfaceContainer i2 = ipv4.Assign(dev2); // second ip on this route
-    Ptr<RateErrorModel> em2 = CreateObject<RateErrorModel>();
-    em2->SetRate(0.10);
+    auto em2 = CreateObject<GEErrorModel>();
+    em2->SetPlr(0.10);
     dev2.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em2));
 
     // ---第三條鏈路(10.1.3.0)---
@@ -107,9 +108,9 @@ int main(int argc, char* argv[]) {
     NetDeviceContainer dev3 = p2p3.Install(nodes);
     ipv4.SetBase("10.1.3.0", "255.255.255.0");
     Ipv4InterfaceContainer i3 = ipv4.Assign(dev3);
-    Ptr<RateErrorModel> em3 = CreateObject<RateErrorModel>();
-    em3->SetRate(0.10);
-    dev3.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em3));
+    // auto em3 = CreateObject<GEErrorModel>();
+    // em3->SetPlr(0.10);
+    // dev3.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em3));
 
     // --- 第四條鏈路 (10.1.4.0) ---
     PointToPointHelper p2p4;
@@ -119,8 +120,8 @@ int main(int argc, char* argv[]) {
     ipv4.SetBase("10.1.4.0", "255.255.255.0");
     ipv4.Assign(dev4);
     Ipv4InterfaceContainer i4 = ipv4.Assign(dev4); // second ip on this route
-    Ptr<RateErrorModel> em4 = CreateObject<RateErrorModel>();
-    em4->SetRate(0.10);
+    auto em4 = CreateObject<GEErrorModel>();
+    em4->SetPlr(0.10);
     dev4.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em4));
 
     /* ----------- Routing ----------- */
@@ -162,6 +163,9 @@ int main(int argc, char* argv[]) {
     std::map<FlowId, FlowMonitor::FlowStats> stats = monitor->GetFlowStats();
 
     std::cout << "\n=== MPTCP Subflow 流量統計結果 ===\n";
+    auto sin = DynamicCast<const MpTcpPacketSink>(sinkApps.Get(0));
+    std::cout << "received byte: " << sin->GetTotalRx() << " byte" << std::endl;
+    std::cout << "-----------------------------------------------\n";
 
     for (const auto& pair : stats) {
         // 透過 FlowId 找出這條流量的 5-Tuple 資訊

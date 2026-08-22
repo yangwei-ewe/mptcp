@@ -235,7 +235,7 @@ namespace ns3 {
         void NewAckNewReno(uint8_t sFlowIdx, const TcpHeader&, TcpOption* opt);
         virtual void DoRetransmit(uint8_t sFlowIdx);
         virtual void DoRetransmit(uint8_t sFlowIdx, DSNMapping* ptrDSN);
-        void SetReTxTimeout(uint8_t sFlowIdx);
+        void SetReTxTimeout(uint8_t sFlowIdx, uint8_t resent = 0);
         void ReTxTimeout(uint8_t sFlowIdx);
         void FecTxTimeout(uint8_t sFlowIdx, DSNMapping* dsn = nullptr);
         virtual void Retransmit(uint8_t sFlowIdx);

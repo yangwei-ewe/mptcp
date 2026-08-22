@@ -37,7 +37,7 @@ namespace ns3 {
           dAddr(Ipv4Address::GetZero()),
           dPort(0),
           oif(0),
-          mapDSN(0),
+          mapDSN(),
           lastMeasuredRtt(Seconds(0.0)) {
         connected = false;
         TxSeqNumber = rand() % 1000;
@@ -81,9 +81,11 @@ namespace ns3 {
         cwnd = 0;
         maxSeqNb = 0;
         highestAck = 0;
-        for (list<DSNMapping*>::iterator it = mapDSN.begin(); it != mapDSN.end(); ++it) {
-            DSNMapping* ptrDSN = *it;
+        // for (list<DSNMapping*>::iterator it = mapDSN.begin(); it != mapDSN.end(); ++it) {
+        for (auto& it : this->mapDSN) {
+            DSNMapping* ptrDSN = it.second;
             delete ptrDSN;
+            it.second = nullptr;
         }
         mapDSN.clear();
     }
@@ -123,7 +125,8 @@ namespace ns3 {
                                      uint32_t sflowSeqNum,
                                      uint32_t ack) {
         NS_LOG_FUNCTION_NOARGS();
-        mapDSN.push_back(new DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack));
+        // mapDSN.push_back(new DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack));
+        mapDSN[sflowSeqNum] = new DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack);
     }
 
     void MpTcpSubFlow::AddDSNMapping(uint8_t sFlowIdx,
@@ -134,8 +137,10 @@ namespace ns3 {
                                      vector<Buffer>& ecc_block,
                                      vector<Buffer>& src_block) {
         NS_LOG_FUNCTION_NOARGS();
-        mapDSN.push_back(
-            new DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack, ecc_block, src_block));
+        // mapDSN.push_back(
+        // new DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack, ecc_block, src_block));
+        mapDSN[sflowSeqNum] =
+            new DSNMapping(sFlowIdx, dSeqNum, dLvlLen, sflowSeqNum, ack, ecc_block, src_block);
     }
 
     void MpTcpSubFlow::SetFinSequence(const SequenceNumber32& s) {
@@ -147,11 +152,12 @@ namespace ns3 {
         }
     }
 
-    DSNMapping* MpTcpSubFlow::GetunAckPkt() {
+    DSNMapping* MpTcpSubFlow::GetunAckPkt() const {
         NS_LOG_FUNCTION(this);
         DSNMapping* ptrDSN = 0;
-        for (list<DSNMapping*>::iterator it = mapDSN.begin(); it != mapDSN.end(); ++it) {
-            DSNMapping* ptr = *it;
+        // for (list<DSNMapping*>::iterator it = mapDSN.begin(); it != mapDSN.end(); ++it) {
+        for (const auto& it : this->mapDSN) {
+            DSNMapping* ptr = it.second;
             if (ptr->subflowSeqNumber == highestAck + 1) {
                 ptrDSN = ptr;
                 break;

@@ -429,7 +429,8 @@ namespace ns3 {
           subflowSeqNumber(sflowSeqNum),
           acknowledgement(ack),
           dupAckCount(0),
-          subflowIndex(sFlowIdx) {
+          subflowIndex(sFlowIdx),
+          resent{0} {
         // packet = new uint8_t[dLvlLen];
         // pkt->CopyData(packet, dLvlLen);
     }
@@ -526,6 +527,12 @@ namespace ns3 {
         return this->dataSeqNumber < rhs.dataSeqNumber;
     }
 
+    bool DSNMapping::inRange(SequenceNumber32 seq) {
+        return (SequenceNumber32(this->subflowSeqNumber) <= seq &&
+                seq <= SequenceNumber32(this->subflowSeqNumber +
+                                        this->maxFecRange * this->fec_blocks[0].GetSize()));
+    }
+
     const Buffer& DSNMapping::Get(size_t idx) const {
         NS_ASSERT_MSG(idx < this->fec_blocks.size(),
                       "DSNMapping::Get() -> asking idx " << +idx << " is out of buffer size "
@@ -535,22 +542,17 @@ namespace ns3 {
 
     void DSNMapping::Received(uint32_t seq_num, const Buffer& data) {
         uint32_t idx{0};
-        if (this->fec_blocks.size() == 0) {
-            NS_ASSERT(this->subflowSeqNumber == seq_num);
-            this->fec_blocks[0] = data;
-            NS_LOG_DEBUG("DSNMapping::Received() -> received idx: " << idx
-                                                                    << " size: " << data.GetSize());
-            return;
-        }
-        idx = (seq_num - this->subflowSeqNumber) / this->fec_blocks[0].GetSize();
+        uint32_t pkt_size{data.GetSize()};
+        NS_ASSERT_MSG(pkt_size != 0, "DSNMapping::Received() -> pkt_size cannot be null");
+        idx = (seq_num - this->subflowSeqNumber) / pkt_size;
+
         // minDecodePkt is the number of symbols needed to decode (k), not the
         // number of symbols carried by the FEC block (n).  In particular, the
         // repair symbols have indexes [k, n), and must be retained: any k of
         // the n Reed-Solomon symbols can reconstruct the source block.
         if (idx >= this->maxFecRange) {
-            NS_LOG_WARN("DSNMapping::Received -> symbol index " << idx
-                                                                  << " is outside FEC range "
-                                                                  << maxFecRange);
+            NS_LOG_WARN("DSNMapping::Received -> symbol index " << idx << " is outside FEC range "
+                                                                << maxFecRange);
             return;
         } else {
             NS_LOG_DEBUG("DSNMapping::Received() -> received idx: " << idx
@@ -570,7 +572,9 @@ namespace ns3 {
 
     ostream& operator<<(ostream& os, const DSNMapping& dsn) {
         os << "DSNMapping(subflowSeq=" << dsn.subflowSeqNumber << " dataSeq=" << dsn.dataSeqNumber
-           << " dataLevelLength=" << dsn.dataLevelLength << ")";
+           << " dataLevelLength=" << dsn.dataLevelLength << " Range=" << dsn.subflowSeqNumber << "~"
+           << dsn.subflowSeqNumber + dsn.maxFecRange * dsn.fec_blocks.begin()->second.GetSize()
+           << ")";
         return os;
     }
 

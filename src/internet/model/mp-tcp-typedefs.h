@@ -328,7 +328,9 @@ namespace ns3 {
         size_t ecc_length;
         FecBlock buf;
         Time time;
+        uint8_t resent;
         friend ostream& operator<<(ostream& os, const DSNMapping& dsn);
+        bool inRange(SequenceNumber32 seq);
         // uint8_t *packet;
     };
 

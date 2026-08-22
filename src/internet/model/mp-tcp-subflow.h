@@ -59,7 +59,7 @@ namespace ns3 {
         bool Finished();
         void RttSent(SequenceNumber32 seq, bool isReTransmission);
         Time RttAcked(SequenceNumber32 ackSeq);
-        DSNMapping* GetunAckPkt();
+        DSNMapping* GetunAckPkt() const;
 
         uint16_t routeId;             // Subflow's ID
         bool connected;               // Subflow's connection status
@@ -90,7 +90,8 @@ namespace ns3 {
         bool m_limitedTx;           // perform limited transmit
         uint32_t m_dupAckCount;     // DupACK counter
         Ipv4EndPoint* m_endPoint;   // L4 stack object
-        list<DSNMapping*> mapDSN;   // List of all sent packets
+        // list<DSNMapping*> mapDSN;   // List of all sent packets
+        map<uint32_t, DSNMapping*> mapDSN; // List of all sent packets <subflowSeq, DSN>
         multiset<double> measuredRTT;
         Ptr<RttMeanDeviation> rtt; // RTT calculator
         Time lastMeasuredRtt;      // Last measured RTT, used for plotting
