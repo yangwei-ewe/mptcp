@@ -46,7 +46,7 @@ namespace ns3 {
         bool SendBufferedData(uint8_t sFlowIdx = 255); // This would called SendPendingData() -
                                                        // TcpTxBuffer API need to be
         // used in future!
-        int FillBuffer(uint8_t* buf,
+        int FillBuffer(const uint8_t* buf,
                        uint32_t size); // Fill sending buffer with data - TcpTxBuffer API
         // need to be used in future!
         int FillBuffer(uint32_t size);

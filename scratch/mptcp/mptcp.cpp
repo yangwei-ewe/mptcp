@@ -28,8 +28,8 @@ NS_LOG_COMPONENT_DEFINE("MpTcpMultipathExample");
 
 int main(int argc, char* argv[]) {
     LogComponentEnable("MpTcpPacketSink", LOG_LEVEL_DEBUG);
-    // LogComponentEnable("MpTcpBulkSendApplication", LOG_LEVEL_DEBUG);
-    LogComponentEnable("MpTcpSocketBase", LOG_LEVEL_ALL);
+    LogComponentEnable("MpTcpBulkSendApplication", LOG_LEVEL_DEBUG);
+    // LogComponentEnable("MpTcpSocketBase", LOG_LEVEL_ALL);
     // LogComponentEnable("ReedSolomonFec", LOG_LEVEL_ALL);
 
     // LogComponentEnable("MpTcpTypeDefs", LOG_LEVEL_ALL);
@@ -46,6 +46,7 @@ int main(int argc, char* argv[]) {
     Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(1024)); // relate to MSS
     Config::SetDefault("ns3::TcpSocket::DelAckCount", UintegerValue(0));
     Config::SetDefault("ns3::TcpSocket::SndBufSize", UintegerValue(32768)); // 32k
+    Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(32768)); // 32k
     Config::SetDefault("ns3::MpTcpSocketBase::FecEnable", BooleanValue(true));
     Config::SetDefault("ns3::MpTcpSocketBase::FecAlgorithm", EnumValue(ReedSolomon));
     Config::SetDefault("ns3::MpTcpSocketBase::FecBlockSize", UintegerValue(6));
@@ -56,12 +57,14 @@ int main(int argc, char* argv[]) {
     Config::SetDefault("ns3::MpTcpSocketBase::CheckAlgorithm", EnumValue(HMAC_MURMUR3));
     Config::SetDefault("ns3::RateErrorModel::ErrorUnit",
                        EnumValue(RateErrorModel::ERROR_UNIT_PACKET));
+    Config::SetDefault("ns3::DropTailQueue<Packet>::MaxSize", QueueSizeValue(QueueSize("200p")));
+
     // Config::SetDefault("ns3::MpTcpPacketSink::ExportFileName", StringValue("rx_buf.txt"));
     // Config::SetDefault("ns3::MpTcpBulkSendApplication::MaxBytes", UintegerValue(0));
 
     // auto rand = 1783961193; // 3rd 3whs dropped
-    auto rand = 1787252424U;
-    // auto rand = time(NULL);
+    // auto rand = 1787252424U;
+    auto rand = time(NULL);
     std::cout << "Random number: " << rand << std::endl;
     RngSeedManager::SetSeed(rand);
 

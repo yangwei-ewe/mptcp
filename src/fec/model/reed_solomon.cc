@@ -1,4 +1,4 @@
-// reed_solomon_v2.cpp
+// reed_solomon.cpp
 // Cauchy Reed-Solomon erasure code 實作 (v2 介面)
 //
 // 與前一版差異:
@@ -312,6 +312,6 @@ namespace ns3 {
     }
 
     std::pair<uint8_t, double> ReedSolomonFec::Update(size_t rtt) {
-        return {6, 0.4};
+        return {8, 0.5};
     }
 } // namespace ns3

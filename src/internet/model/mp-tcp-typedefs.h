@@ -100,7 +100,9 @@ namespace ns3 {
     } CongestionCtrl_t;
 
     typedef enum {
-        Round_Robin
+        Round_Robin,
+        Min_RTT,
+        Max_CWND
     } DataDistribAlgo_t;
 
     enum PathPolicy {
@@ -311,7 +313,7 @@ namespace ns3 {
         virtual ~DSNMapping();
         bool operator<(const DSNMapping& rhs) const;
         const Buffer& Get(size_t idx) const;
-        void Received(uint32_t seq_num, const Buffer& data);
+        int Received(uint32_t seq_num, const Buffer& data);
         size_t GetEccLength() const;
         size_t size() const;
 

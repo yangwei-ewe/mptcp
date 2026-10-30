@@ -1,8 +1,8 @@
 .venv
 .vscode
-mptcp.cc
 cmake-cache
 .lock-ns3_linux_build
+output/
 build/
 tmp.log
 mptcp-flowmon-rusults.xml

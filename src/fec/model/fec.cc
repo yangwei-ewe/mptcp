@@ -8,7 +8,7 @@ NS_LOG_COMPONENT_DEFINE("fec");
 
 namespace ns3 {
     std::vector<Buffer> MpTcpFec::Encode(const std::vector<Buffer>& symbol, double fec_ratio) {
-        NS_LOG_FUNCTION(this << symbol.size() << static_cast<uint32_t>(fec_ratio * 100) << "%");
+        NS_LOG_FUNCTION(this << symbol.size() << fec_ratio);
         size_t max_symb_length{};
         NS_ASSERT(symbol.size());
         for (const auto& buf : symbol) {
@@ -39,22 +39,6 @@ namespace ns3 {
             it.Write(ecc_pkts[i].symb, ecc_pkts[i].symb_len);
         }
 
-        // uint8_t peek[50];
-        // ecc_packets[0].CopyData(peek, sizeof(peek) - 1);
-        // peek[49] = '\0';
-        // std::stringstream ss;
-        // for (auto ch : peek) {
-        //     ss << std::setw(3) << std::setfill(' ') << +ch << " ";
-        // }
-        // NS_LOG_DEBUG("MpTcpFec::Encode -> peek data: " << ss.str());
-        // // ecc_pkts[0].CopyData(peek, sizeof(peek) - 1);
-        // memcpy(peek, ecc_pkts[0].symb, sizeof(peek) - 1);
-        // peek[49] = '\0';
-        // ss.str("");
-        // for (auto ch : peek) {
-        //     ss << std::setw(3) << std::setfill(' ') << +ch << " ";
-        // }
-        // NS_LOG_DEBUG("MpTcpFec::Encode -> peek data: " << ss.str());
         // dont forget delete
         for (auto it : _symb) {
             delete[] it.symb;
@@ -74,15 +58,24 @@ namespace ns3 {
                                          size_t dest_pack_num) {
         NS_LOG_FUNCTION(this << dest_pack_num);
         size_t symb_length = symbol[0].second.GetSize();
-        int missing_idx{0};
+        std::vector<uint32_t> missing_idx;
+        std::stringstream ss;
+        int _idx{0};
         for (auto& it : symbol) {
-            NS_LOG_DEBUG("id: " << it.first);
-            if (it.first != missing_idx) {
-                break;
+            while (it.first != _idx) {
+                missing_idx.push_back(_idx);
+                _idx++;
             }
-            missing_idx++;
+            _idx++;
+            ss << it.first << " ";
         }
-        if (missing_idx >= static_cast<int>(dest_pack_num)) {
+        NS_LOG_DEBUG("MpTcpFec::Decode -> recv id: " << ss.str());
+        ss.str("");
+        for (auto& it : missing_idx) {
+            ss << it << " ";
+        }
+        NS_LOG_DEBUG("MpTcpFec::Decode -> missing id: " << ss.str());
+        if (!missing_idx.empty() && (*(missing_idx.begin()) >= dest_pack_num)) {
             std::vector<Buffer> rtn;
             rtn.reserve(dest_pack_num);
             for (size_t i{0}; i < dest_pack_num; i++) {
@@ -98,22 +91,22 @@ namespace ns3 {
             _symb[i].first = symbol[i].first;
             _symb[i].second.symb_len = symb_length;
             memset(it, 0, symb_length);
-            NS_ASSERT_MSG(symb_length == symbol[i].second.GetSize(),
-                          "symb_length(" << symb_length
-                                         << ") is not Eq. to symbol[i].second.GetSize()("
-                                         << symbol[i].second.GetSize() << ")");
+            // NS_ASSERT_MSG(symb_length == symbol[i].second.GetSize(),
+            //               "symb_length(" << symb_length
+            //                              << ") is not Eq. to symbol[i].second.GetSize()("
+            //                              << symbol[i].second.GetSize() << ")");
             symbol[i].second.CopyData(it, symbol[i].second.GetSize());
         }
         auto dest_pkts = this->DecodeImpl(_symb, ecc_len, dest_pack_num);
         std::vector<Buffer> dest_packs(dest_pack_num);
         // std::stringstream ss;
-        for (size_t i{}; i < dest_pack_num; i++) {
+        for (size_t i{0}; i < dest_pack_num; i++) {
             dest_packs[i].AddAtEnd(dest_pkts[i].symb_len);
             auto it = dest_packs[i].Begin();
             it.Write(dest_pkts[i].symb, dest_pkts[i].symb_len);
-            // uint8_t peek[50];
-            // dest_packs[i].CopyData(peek, sizeof(peek));
-            // peek[50] = '\0';
+            // uint8_t peek[150];
+            // memcpy(peek, dest_pkts[i].symb, std::min(dest_pkts[i].symb_len, sizeof(peek)));
+            // peek[sizeof(peek)] = '\0';
             // NS_LOG_DEBUG("MpTcpFec::Decode -> decode: [" << i << "] msg: " << peek);
         }
 
@@ -141,16 +134,21 @@ namespace ns3 {
             return {};
         }
 
-        int missing_idx{0};
+        // int missing_idx{0};
+        std::vector<uint32_t> missing_idx;
+        std::stringstream ss;
+        int _idx{0};
         for (auto& it : symbol) {
-            NS_LOG_DEBUG("id: " << it.first);
-            if (it.first != missing_idx) {
-                break;
+            while (it.first != _idx) {
+                missing_idx.push_back(_idx);
+                _idx++;
             }
-            missing_idx++;
+            _idx++;
+            ss << it.first << " ";
         }
-        NS_LOG_DEBUG("?");
-        if (missing_idx >= static_cast<int>(dest_pack_num)) {
+        NS_LOG_DEBUG("MpTcpFec::Decode -> recv id: " << ss.str());
+        // NS_LOG_DEBUG("?");
+        if (!missing_idx.empty() && (*(missing_idx.begin()) >= dest_pack_num)) {
             std::vector<Buffer> rtn;
             rtn.reserve(dest_pack_num);
             for (size_t i{0}; i < dest_pack_num; i++) {
@@ -182,19 +180,21 @@ namespace ns3 {
 
         auto dest_pkts = this->DecodeImpl(_symb, ecc_len, dest_pack_num);
 
-        std::vector<Buffer> dest_packs(dest_pack_num);
-        for (size_t i = 0; i < dest_pack_num; i++) {
-            if (i < _symb.size()) {
-                dest_packs[i].AddAtEnd(_symb[i].second.symb_len);
-                auto it = dest_packs[i].Begin();
-                it.Write(_symb[i].second.symb, _symb[i].second.symb_len);
-            }
+        std::vector<Buffer> dest_packs(dest_packs.size());
+        for (size_t i = 0; i < dest_packs.size(); i++) {
+            dest_packs[i].AddAtEnd(dest_pkts[i].symb_len);
+            auto it = dest_packs[i].Begin();
+            it.Write(dest_pkts[i].symb, dest_pkts[i].symb_len);
         }
 
         // 4. 釋放動態配置的記憶體
-        for (auto& blk : _symb) { // 修正：必須使用引用 & 才能真正修改 blk 裡面的值
+        for (auto& blk : _symb) {
             delete[] blk.second.symb;
             blk.second = {nullptr, 0};
+        }
+        for (auto& blk : dest_pkts) {
+            delete[] blk.symb;
+            blk = {nullptr, 0};
         }
 
         return dest_packs;

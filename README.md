@@ -1,6 +1,10 @@
 # FEC over MPTCP
 An implementation of Forward Error Correction (FEC) algorithms, including XOR and Reed–Solomon (RS) codes, over RFC 8684 (Multipath TCP v1) and draft-flach-tcpm-fec-00 (TCP Instant Recovery, TcpIR).
 
+# Prerequisites
+Before getting started, make sure you have the following installed:
+- openssl 3.0+
+
 # INSTALL
 1. Please follow [ns3 offical building tutorial](https://www.nsnam.org/docs/release/3.47/tutorial/html/getting-started.html#building-ns-3) to build ns3
 2. Run your own scratch script using:

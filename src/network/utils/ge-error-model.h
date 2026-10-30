@@ -36,6 +36,9 @@ namespace ns3 {
         double m_plr;          ///< 目標封包遺失率
         uint32_t m_packetSize; ///< 封包大小 (bytes)
         bool m_currentState;   ///< 當前狀態 (true = Good, false = Bad)
+        double m_avgBurstLength;
+        void SetAverageBurstLength(double burstLength);
+        double GetAverageBurstLength(void) const;
 
         Ptr<RandomVariableStream> m_ranvar; //!< rng stream
         std::uniform_real_distribution<double> m_dist;

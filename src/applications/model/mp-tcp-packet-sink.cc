@@ -46,7 +46,7 @@ namespace ns3 {
 
     NS_OBJECT_ENSURE_REGISTERED(MpTcpPacketSink);
 
-    vector<MpTcpAddressInfo> get_address(Ptr<Node> node, Address listen_addr) {
+    inline vector<MpTcpAddressInfo> get_address(Ptr<Node> node, Address listen_addr) {
         Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
         // auto isock = node->GetObject<InetSocketAddress>();
         auto listen_addr_isocket = InetSocketAddress::ConvertFrom(listen_addr);

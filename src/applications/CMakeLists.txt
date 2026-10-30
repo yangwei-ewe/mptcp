@@ -1,3 +1,6 @@
+
+find_package(jsoncpp REQUIRED)
+
 build_lib(
   LIBNAME applications
   SOURCE_FILES
@@ -8,11 +11,15 @@ build_lib(
     helper/udp-client-server-helper.cc
     helper/udp-echo-helper.cc
     helper/mp-tcp-bulk-send-helper.cc
+    helper/mp-tcp-file-send-helper.cc
     helper/mp-tcp-packet-sink-helper.cc
+    helper/mp-tcp-file-sink-helper.cc
     model/mp-tcp-packet-sink.cc
+    model/mp-tcp-file-sink.cc
     model/application-packet-probe.cc
     model/bulk-send-application.cc
     model/mptcp-bulk-send-application.cc
+    model/mptcp-file-send-application.cc
     model/onoff-application.cc
     model/packet-loss-counter.cc
     model/packet-sink.cc
@@ -38,11 +45,15 @@ build_lib(
     helper/udp-client-server-helper.h
     helper/udp-echo-helper.h
     helper/mp-tcp-bulk-send-helper.h
+    helper/mp-tcp-file-send-helper.h
     helper/mp-tcp-packet-sink-helper.h
+    helper/mp-tcp-file-sink-helper.h
     model/mp-tcp-packet-sink.h
+    model/mp-tcp-file-sink.h
     model/application-packet-probe.h
     model/bulk-send-application.h
     model/mptcp-bulk-send-application.h
+    model/mptcp-file-send-application.h
     model/onoff-application.h
     model/packet-loss-counter.h
     model/packet-sink.h
@@ -60,7 +71,8 @@ build_lib(
     model/udp-echo-server.h
     model/udp-server.h
     model/udp-trace-client.h
-  LIBRARIES_TO_LINK ${libinternet}
+    model/fdt.h
+  LIBRARIES_TO_LINK ${libinternet} crypto
   TEST_SOURCES
     test/three-gpp-http-client-server-test.cc
     test/bulk-send-application-test-suite.cc

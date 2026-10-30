@@ -2,6 +2,7 @@
 
 #include "ns3/log.h"
 #include "ns3/mp-tcp-socket-base.h"
+#include "ns3/random-variable-stream.h"
 #include "ns3/simulator.h"
 #include "ns3/tcp-header.h"
 
@@ -229,10 +230,18 @@ namespace ns3 {
         auto subflow = path->get_subflow();
         // path->set_subflow(subflow);
         Ipv4EndPoint* endpoint;
-        if (src_addr_info->port) {
-            endpoint = tcp->Allocate(NetDev_of_src, src_addr_info->ipv4Addr, src_addr_info->port);
-        } else {
-            endpoint = tcp->Allocate(src_addr_info->ipv4Addr); // dont need netdev?
+        constexpr uint32_t local_port_min = 32768U;
+        constexpr uint32_t local_port_max = 61000U;
+        Ptr<UniformRandomVariable> uniRandom = CreateObject<UniformRandomVariable>();
+        if (!src_addr_info->port) {
+            src_addr_info->port = uniRandom->GetInteger(local_port_min, local_port_max);
+        }
+        endpoint = tcp->Allocate(NetDev_of_src, src_addr_info->ipv4Addr, src_addr_info->port);
+        if (!endpoint->GetBoundNetDevice()) {
+            endpoint->BindToNetDevice(NetDev_of_src);
+        }
+        NS_ASSERT(endpoint->GetBoundNetDevice());
+        if (!src_addr_info->port) {
             src_addr_info->port = endpoint->GetLocalPort();
             NS_LOG_DEBUG("create_path(): allocating new port: " << +src_addr_info->port);
         }
@@ -540,20 +549,20 @@ namespace ns3 {
         return this->fec_blocks.at(idx);
     }
 
-    void DSNMapping::Received(uint32_t seq_num, const Buffer& data) {
-        uint32_t idx{0};
+    int DSNMapping::Received(uint32_t seq_num, const Buffer& data) {
+        int idx{0};
         uint32_t pkt_size{data.GetSize()};
         NS_ASSERT_MSG(pkt_size != 0, "DSNMapping::Received() -> pkt_size cannot be null");
         idx = (seq_num - this->subflowSeqNumber) / pkt_size;
-
+        NS_LOG_DEBUG("DSNMapping::Received -> idx: " << idx);
         // minDecodePkt is the number of symbols needed to decode (k), not the
         // number of symbols carried by the FEC block (n).  In particular, the
         // repair symbols have indexes [k, n), and must be retained: any k of
         // the n Reed-Solomon symbols can reconstruct the source block.
-        if (idx >= this->maxFecRange) {
+        if (static_cast<uint32_t>(idx) >= this->maxFecRange) {
             NS_LOG_WARN("DSNMapping::Received -> symbol index " << idx << " is outside FEC range "
                                                                 << maxFecRange);
-            return;
+            return -1;
         } else {
             NS_LOG_DEBUG("DSNMapping::Received() -> received idx: " << idx
                                                                     << " size: " << data.GetSize());
@@ -567,7 +576,7 @@ namespace ns3 {
         //     ss << setw(3) << setfill(' ') << +ch << ' ';
         // }
         // NS_LOG_DEBUG("DSNMapping::Received -> received data: " << ss.str());
-        return;
+        return idx;
     }
 
     ostream& operator<<(ostream& os, const DSNMapping& dsn) {
