@@ -418,7 +418,7 @@ namespace ns3 {
             }
             std::ifstream inFile(chunkPath, std::ios::binary);
             if (!inFile.is_open()) {
-                NS_LOG_INFO("Failed to open chunk file: " << chunkPath);
+                NS_FATAL_ERROR("Failed to open chunk file: " << chunkPath);
                 mergeSuccess = false;
                 break;
             }

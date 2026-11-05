@@ -55,7 +55,7 @@ namespace ns3 {
                 .AddAttribute("Plr",
                               "Target Packet Loss Rate (PLR)",
                               DoubleValue(0.0),
-                              MakeDoubleAccessor(&GEErrorModel::SetPlr, &GEErrorModel::GetPlr),
+                              MakeDoubleAccessor(&GEErrorModel::SetRate, &GEErrorModel::GetRate),
                               MakeDoubleChecker<double>(0.0, 1.0))
                 .AddAttribute("PacketSize",
                               "Packet size in bytes for table lookup",
@@ -81,11 +81,11 @@ namespace ns3 {
     GEErrorModel::~GEErrorModel() {
     }
 
-    void GEErrorModel::SetPlr(double plr) {
+    void GEErrorModel::SetRate(double plr) {
         this->m_plr = std::clamp(plr, 0.0, 1.0);
     }
 
-    double GEErrorModel::GetPlr(void) const {
+    double GEErrorModel::GetRate(void) const {
         return m_plr;
     }
 

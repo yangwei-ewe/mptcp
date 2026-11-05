@@ -312,6 +312,6 @@ namespace ns3 {
     }
 
     std::pair<uint8_t, double> ReedSolomonFec::Update(size_t rtt) {
-        return {8, 0.5};
+        return {4, 0.6};
     }
 } // namespace ns3

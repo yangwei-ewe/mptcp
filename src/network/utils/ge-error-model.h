@@ -19,8 +19,8 @@ namespace ns3 {
         GEErrorModel();
         virtual ~GEErrorModel();
 
-        void SetPlr(double plr);
-        double GetPlr(void) const;
+        void SetRate(double plr);
+        double GetRate(void) const;
 
         void SetPacketSize(uint32_t packetSize);
         uint32_t GetPacketSize(void) const;

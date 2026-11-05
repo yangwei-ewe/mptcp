@@ -31,9 +31,9 @@ using namespace ns3;
 NS_LOG_COMPONENT_DEFINE("MpTcpMultipathExample");
 
 int main(int argc, char* argv[]) {
-    // LogComponentEnable("MpTcpFileSink", LOG_LEVEL_DEBUG);
-    // LogComponentEnable("MpTcpFileSendApplication", LOG_LEVEL_DEBUG);
-    // LogComponentEnable("MpTcpSocketBase", LOG_LEVEL_ALL);
+    LogComponentEnable("MpTcpFileSink", LOG_LEVEL_ALL);
+    LogComponentEnable("MpTcpFileSendApplication", LOG_LEVEL_WARN);
+    LogComponentEnable("MpTcpSocketBase", LOG_LEVEL_ALL);
     // LogComponentEnable("ReedSolomonFec", LOG_LEVEL_ALL);
     // LogComponentEnable("MpTcpSubflow", LOG_LEVEL_ALL);
 
@@ -55,7 +55,7 @@ int main(int argc, char* argv[]) {
     Config::SetDefault("ns3::TcpSocket::RcvBufSize", UintegerValue(128 << 10)); // 500K
     Config::SetDefault("ns3::MpTcpSocketBase::FecEnable", BooleanValue(true));
     Config::SetDefault("ns3::MpTcpSocketBase::FecAlgorithm", EnumValue(ReedSolomon));
-    Config::SetDefault("ns3::MpTcpSocketBase::SchedulingAlgorithm", EnumValue(Round_Robin));
+    Config::SetDefault("ns3::MpTcpSocketBase::SchedulingAlgorithm", EnumValue(Min_RTT));
     Config::SetDefault("ns3::MpTcpSocketBase::FecBlockSize", UintegerValue(6));
     Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue(MpTcpSocketBase::GetTypeId()));
     Config::SetDefault("ns3::MpTcpSocketBase::MaxSubflows", UintegerValue(8));
@@ -68,10 +68,10 @@ int main(int argc, char* argv[]) {
     // auto rand = 1783961193; // 3rd 3whs dropped
     // auto rand = 1787252424U;
     // auto rand = 1791915297U; // best
-    // std::vector<uint32_t> randlist = {885461441U, 596949560U,2694385449U, 2570886438U,
+    // std::vector<uint32_t> randlist = {, ,2694385449U, 2570886438U,
     // 1361663581U}; // bug
 
-// #define DEBUG_RAND 4055474834U
+// #define DEBUG_RAND 26884913U
 #ifndef DEBUG_RAND
 #ifdef __linux__
     uint32_t rand = {};
@@ -98,7 +98,7 @@ int main(int argc, char* argv[]) {
 
     /* ----------- Create multiple paths ----------- */
 
-    double plr = 0.05;
+    double plr = 0.10;
     std::cout << "using plr: " << plr << std::endl;
     Ipv4AddressHelper ipv4;
     // --- 第一條鏈路 (10.1.1.0) ---
@@ -110,7 +110,7 @@ int main(int argc, char* argv[]) {
     ipv4.SetBase("10.1.1.0", "255.255.255.0");
     Ipv4InterfaceContainer i = ipv4.Assign(dev1);
     auto em1 = CreateObject<GEErrorModel>();
-    em1->SetPlr(plr);
+    em1->SetRate(plr);
     dev1.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em1));
 
     // --- 第二條鏈路 (10.1.2.0) ---
@@ -121,7 +121,7 @@ int main(int argc, char* argv[]) {
     ipv4.SetBase("10.1.2.0", "255.255.255.0");
     Ipv4InterfaceContainer i2 = ipv4.Assign(dev2); // second ip on this route
     auto em2 = CreateObject<GEErrorModel>();
-    em2->SetPlr(plr);
+    em2->SetRate(plr);
     dev2.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em2));
 
     // ---第三條鏈路(10.1.3.0)---
@@ -132,7 +132,7 @@ int main(int argc, char* argv[]) {
     ipv4.SetBase("10.1.3.0", "255.255.255.0");
     Ipv4InterfaceContainer i3 = ipv4.Assign(dev3);
     auto em3 = CreateObject<GEErrorModel>();
-    em3->SetPlr(plr);
+    em3->SetRate(plr);
     dev3.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em3));
 
     // --- 第四條鏈路 (10.1.4.0) ---
@@ -144,7 +144,7 @@ int main(int argc, char* argv[]) {
     // ipv4.Assign(dev4);
     Ipv4InterfaceContainer i4 = ipv4.Assign(dev4); // second ip on this route
     auto em4 = CreateObject<GEErrorModel>();
-    em4->SetPlr(plr);
+    em4->SetRate(plr);
     dev4.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em4));
 
     /* ----------- Routing ----------- */
@@ -164,7 +164,7 @@ int main(int argc, char* argv[]) {
 
     MpTcpFileSendHelper source("ns3::TcpSocketFactory",
                                InetSocketAddress(Ipv4Address(i.GetAddress(1)), port),
-                               "send.csv");
+                               "send.zip");
     // source.SetAttribute("MaxBytes", UintegerValue(0));  // send forever
     // source.SetAttribute("MaxBytes", UintegerValue(1e5));
     // source.SetAttribute("SendSize", UintegerValue(1500));
@@ -190,7 +190,7 @@ int main(int argc, char* argv[]) {
     std::cout << "\n=== MPTCP Subflow 流量統計結果 ===\n";
     auto sin = DynamicCast<const MpTcpFileSink>(sinkApps.Get(0));
     std::cout << "received byte: " << sin->GetTotalRx() << " byte" << std::endl
-              << "exccute time: " << Simulator::Now().GetSeconds() << "s" << std::endl;
+              << "execute time: " << Simulator::Now().GetSeconds() << "s" << std::endl;
     std::cout << "-----------------------------------------------\n";
 
     for (const auto& pair : stats) {
